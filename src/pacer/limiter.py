@@ -81,6 +81,13 @@ class Limiter:
         route_scope: Scope for route keys ("route", "method", "app")
         expose_headers: Whether to expose rate limit headers
         trust_proxies: List of trusted proxy IPs/CIDRs
+        connect_timeout_ms: Redis connection timeout in milliseconds
+        command_timeout_ms: Redis command timeout in milliseconds
+        cluster_mode: Whether to use Redis cluster mode
+        legacy_timestamp_header: Whether to add X-RateLimit-Reset with Unix timestamp
+        expose_policy_header: Whether to add X-RateLimit-Policy header for debugging
+        on_decision: Hook called after rate limit decision
+        on_error: Hook called on errors
     """
 
     def __init__(
@@ -97,6 +104,7 @@ class Limiter:
         command_timeout_ms: int = 100,
         cluster_mode: bool = False,
         legacy_timestamp_header: bool = False,
+        expose_policy_header: bool = False,
         on_decision: OnDecisionHook | None = None,
         on_error: OnErrorHook | None = None,
     ):
@@ -113,6 +121,7 @@ class Limiter:
         self.route_scope = route_scope
         self.expose_headers = expose_headers
         self.legacy_timestamp_header = legacy_timestamp_header
+        self.expose_policy_header = expose_policy_header
 
         # Observability hooks (default to no-op)
         self.on_decision = on_decision or _noop_on_decision
@@ -294,6 +303,13 @@ class Limiter:
         # Optional: Add X-RateLimit-Reset with Unix timestamp for compatibility
         if self.legacy_timestamp_header:
             response.headers["X-RateLimit-Reset"] = str(result.reset_timestamp)
+
+        # Optional: Add X-RateLimit-Policy header for debugging
+        if self.expose_policy_header:
+            policy_str = f"{policy.permits};w={policy.per}"
+            if policy.burst > 0:
+                policy_str += f";burst={policy.burst}"
+            response.headers["X-RateLimit-Policy"] = policy_str
 
         # Add Retry-After header if rate limited
         if not result.allowed:

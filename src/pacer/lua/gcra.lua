@@ -1,7 +1,7 @@
 -- GCRA (Generic Cell Rate Algorithm) implementation for rate limiting
 -- Keys: rate_key
 -- Args: emission_interval_ms, burst_capacity_ms, now_ms, ttl_ms
--- Returns: {allowed (0|1), retry_after_ms, reset_ms, remaining_estimate}
+-- Returns: {allowed (0|1), retry_after_ms, reset_delta_ms, remaining_estimate}
 
 local rate_key = KEYS[1]
 local emission_interval = tonumber(ARGV[1])
@@ -52,5 +52,6 @@ end
 
 -- Calculate reset time (when full burst will be available again)
 local reset_at = new_tat - emission_interval + burst_capacity
+local reset_delta = reset_at - now
 
-return {allowed, retry_after, reset_at, remaining}
+return {allowed, retry_after, reset_delta, remaining}
