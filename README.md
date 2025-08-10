@@ -94,6 +94,30 @@ limiter = Limiter(
 )
 ```
 
+### Storage Backends
+
+For most applications, the default simple Redis storage is recommended:
+
+```python
+from pacer import Limiter
+
+# Simple Redis (recommended)
+limiter = Limiter(
+    redis_url="redis://localhost:6379",
+    cluster_mode=False  # default
+)
+```
+
+For Redis Cluster deployments only:
+
+```python
+# Redis Cluster (adds complexity)
+limiter = Limiter(
+    redis_url="redis://cluster-node:6379",
+    cluster_mode=True  # enables cluster support
+)
+```
+
 ### Fail Modes
 
 ```python
