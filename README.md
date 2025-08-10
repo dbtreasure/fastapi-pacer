@@ -134,6 +134,8 @@ limiter = Limiter(fail_mode="closed")
 
 All responses include rate limit headers (when `expose_headers=True`):
 
+**Note**: Optional headers use the `X-` prefix to indicate they are non-standard debug/compatibility headers.
+
 ```http
 HTTP/1.1 200 OK
 RateLimit-Limit: 100
@@ -145,6 +147,7 @@ RateLimit-Reset: 60
 - `RateLimit-Remaining`: Requests remaining in current window
 - `RateLimit-Reset`: Seconds until the limit resets (delta-seconds per spec)
 - `X-RateLimit-Reset`: Unix timestamp of reset time (optional, with `legacy_timestamp_header=True`)
+- `X-RateLimit-Policy`: Active rate limit policy for debugging (optional, with `expose_policy_header=True`)
 
 ### 429 Rate Limited Response
 
