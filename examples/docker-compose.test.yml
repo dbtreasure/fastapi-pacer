@@ -1,0 +1,137 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: pacer-redis-test
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Service 1: Basic rate limiting (10/min, burst=5)
+  service-basic:
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    container_name: pacer-basic
+    ports:
+      - "8001:8000"
+    environment:
+      - SERVICE_NAME=basic
+      - REDIS_URL=redis://redis:6379
+      - RATE_PERMITS=10
+      - RATE_PERIOD=1m
+      - RATE_BURST=5
+      - FAIL_MODE=open
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn examples.configurable_app:app --host 0.0.0.0 --port 8000
+
+  # Service 2: Strict rate limiting (5/min, no burst)
+  service-strict:
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    container_name: pacer-strict
+    ports:
+      - "8002:8000"
+    environment:
+      - SERVICE_NAME=strict
+      - REDIS_URL=redis://redis:6379
+      - RATE_PERMITS=5
+      - RATE_PERIOD=1m
+      - RATE_BURST=0
+      - FAIL_MODE=closed
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn examples.configurable_app:app --host 0.0.0.0 --port 8000
+
+  # Service 3: Burst testing (10/10s, burst=5)
+  service-burst:
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    container_name: pacer-burst
+    ports:
+      - "8003:8000"
+    environment:
+      - SERVICE_NAME=burst
+      - REDIS_URL=redis://redis:6379
+      - RATE_PERMITS=10
+      - RATE_PERIOD=10s
+      - RATE_BURST=5
+      - FAIL_MODE=open
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn examples.configurable_app:app --host 0.0.0.0 --port 8000
+
+  # Service 4: High volume (1000/min, burst=100)
+  service-highvolume:
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    container_name: pacer-highvolume
+    ports:
+      - "8004:8000"
+    environment:
+      - SERVICE_NAME=highvolume
+      - REDIS_URL=redis://redis:6379
+      - RATE_PERMITS=1000
+      - RATE_PERIOD=1m
+      - RATE_BURST=100
+      - FAIL_MODE=open
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn examples.configurable_app:app --host 0.0.0.0 --port 8000
+
+  # Service 5: With middleware (global 100/min + per-route)
+  service-middleware:
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    container_name: pacer-middleware
+    ports:
+      - "8005:8000"
+    environment:
+      - SERVICE_NAME=middleware
+      - REDIS_URL=redis://redis:6379
+      - RATE_PERMITS=50
+      - RATE_PERIOD=1m
+      - RATE_BURST=10
+      - USE_MIDDLEWARE=true
+      - MIDDLEWARE_PERMITS=100
+      - MIDDLEWARE_PERIOD=1m
+      - MIDDLEWARE_BURST=20
+      - FAIL_MODE=open
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn examples.configurable_app:app --host 0.0.0.0 --port 8000
+
+  # Service 6: Fast rate (100/1s, burst=10) for high-frequency testing
+  service-fast:
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    container_name: pacer-fast
+    ports:
+      - "8006:8000"
+    environment:
+      - SERVICE_NAME=fast
+      - REDIS_URL=redis://redis:6379
+      - RATE_PERMITS=100
+      - RATE_PERIOD=1s
+      - RATE_BURST=10
+      - FAIL_MODE=open
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn examples.configurable_app:app --host 0.0.0.0 --port 8000
