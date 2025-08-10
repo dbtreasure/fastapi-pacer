@@ -12,6 +12,8 @@ A production-ready, high-performance rate limiter for FastAPI applications using
 - **Standard Headers**: RFC 6585 compliant with `429 Too Many Requests`
 - **Resilience**: Configurable fail-open/fail-closed behavior
 - **High Performance**: <150µs P99 overhead in production
+- **Type Safe**: Full type hints with mypy and pyright support
+- **Well Tested**: 52+ tests including property-based testing with Hypothesis
 
 ## Installation
 
@@ -230,12 +232,34 @@ uv run pytest --cov=src/pacer --cov-report=term-missing
 
 # Run type checking
 uv run mypy src
+uvx ty check .  # Alternative type checker
 
 # Format code
 uv run ruff format src tests
 
 # Lint code
 uv run ruff check src tests
+```
+
+### Integration Testing
+
+```bash
+# Start all test services (6 different configurations)
+docker-compose -f examples/docker-compose.test.yml up -d
+
+# Run integration tests
+uv run pytest tests/test_integration.py -v
+
+# Test individual service configurations
+curl http://localhost:8001/config  # basic: 10/min, burst=5
+curl http://localhost:8002/config  # strict: 5/min, no burst
+curl http://localhost:8003/config  # burst: 10/10s, burst=5
+curl http://localhost:8004/config  # highvolume: 1000/min, burst=100
+curl http://localhost:8005/config  # middleware: global + per-route
+curl http://localhost:8006/config  # fast: 100/1s, burst=10
+
+# Clean up
+docker-compose -f examples/docker-compose.test.yml down
 ```
 
 ### Docker Development
