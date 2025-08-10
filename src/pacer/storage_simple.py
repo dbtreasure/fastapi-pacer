@@ -44,6 +44,8 @@ class SimpleRedisStorage:
                 socket_connect_timeout=self.connect_timeout,
                 socket_timeout=self.command_timeout,
                 decode_responses=False,
+                max_connections=50,  # Increase connection pool size
+                health_check_interval=0,  # Disable health checks for performance
             )
 
             # Test connection

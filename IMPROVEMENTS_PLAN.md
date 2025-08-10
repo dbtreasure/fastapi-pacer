@@ -35,19 +35,19 @@ self.on_decision = on_rate_limit_decision
 
 **Complexity:** Simple - just callback pattern, no dependencies
 
-### 3. Create Benchmark Script 📊
+### 3. Create Benchmark Script 📊 ✅ DONE
 **Issue:** Performance claims without reproducible evidence
-**Fix:** Create `scripts/bench.sh` that:
+**Fix:** Created `scripts/bench.sh` that:
 - Starts uvicorn with N workers
-- Runs `hey` or `wrk` against rate-limited endpoint
+- Runs `hey` against both unlimited and rate-limited endpoints
 - Reports p50/p90/p99 latencies and overhead
-- Shows Redis ops/sec
+- Calculates overhead in microseconds and milliseconds
 
-**New files:**
-- `scripts/bench.sh` - Benchmark harness
-- `scripts/bench_app.py` - Minimal test app
-
-**Complexity:** Simple script, no code changes
+**Reality Check:** 
+- Initial claim of <150μs was unrealistic for network operations
+- Actual overhead: 1-7ms P99 (depends on Redis latency)
+- This is normal and expected for Redis network RTT
+- Updated documentation to reflect realistic performance
 
 ## Priority 2: Documentation Improvements
 

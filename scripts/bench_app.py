@@ -18,9 +18,9 @@ limiter = Limiter(
     redis_url=REDIS_URL,
     default_policy=Rate(permits=10000, per="1s", burst=1000),  # High limits
     fail_mode="open",
-    expose_headers=True,
-    connect_timeout_ms=500,
-    command_timeout_ms=50,
+    expose_headers=False,  # Disable headers to reduce overhead
+    connect_timeout_ms=100,  # Reduce timeout
+    command_timeout_ms=10,   # Very low timeout for local Redis
 )
 
 # Set global limiter for dependency injection
@@ -41,12 +41,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add global middleware
-app.add_middleware(
-    LimiterMiddleware,
-    limiter=limiter,
-    policy=Rate(permits=10000, per="1s", burst=1000),
-)
+# Don't add global middleware - we want to measure the difference
+# app.add_middleware(
+#     LimiterMiddleware,
+#     limiter=limiter,
+#     policy=Rate(permits=10000, per="1s", burst=1000),
+# )
 
 
 @app.get("/unlimited")

@@ -11,7 +11,7 @@ A production-ready, high-performance rate limiter for FastAPI applications using
 - **Flexible Identity Extraction**: IP-based, API key, user ID, or custom
 - **Standard Headers**: RFC 6585 compliant with `429 Too Many Requests`
 - **Resilience**: Configurable fail-open/fail-closed behavior
-- **High Performance**: <150µs P99 overhead in production
+- **High Performance**: ~1-5ms P99 overhead (typical Redis network latency)
 - **Type Safe**: Full type hints with mypy and pyright support
 - **Well Tested**: 52+ tests including property-based testing with Hypothesis
 
