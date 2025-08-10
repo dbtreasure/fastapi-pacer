@@ -11,7 +11,7 @@ A production-ready, high-performance rate limiter for FastAPI applications using
 - **Flexible Identity Extraction**: IP-based, API key, user ID, or custom
 - **Standard Headers**: RFC 6585 compliant with `429 Too Many Requests`
 - **Resilience**: Configurable fail-open/fail-closed behavior
-- **High Performance**: ~1-5ms P99 overhead (typical Redis network latency)
+- **High Performance**: 1-7ms P99 overhead (benchmarked with Redis RTT)
 - **Type Safe**: Full type hints with mypy and pyright support
 - **Well Tested**: 52+ tests including property-based testing with Hypothesis
 
@@ -137,7 +137,8 @@ HTTP/1.1 429 Too Many Requests
 Retry-After: 5
 RateLimit-Limit: 100
 RateLimit-Remaining: 0
-RateLimit-Reset: 1701234567
+RateLimit-Reset: 5
+X-RateLimit-Reset: 1701234567
 
 {
   "detail": "rate_limited",
@@ -194,6 +195,8 @@ Benefits over token bucket:
 - O(1) memory per key
 - Precise control over burst behavior
 - Natural decay of burst capacity over time
+
+For a detailed explanation with visual timeline, see [docs/ALGORITHM.md](docs/ALGORITHM.md).
 
 ## Architecture
 
@@ -277,6 +280,30 @@ curl http://localhost:8006/config  # fast: 100/1s, burst=10
 docker-compose -f examples/docker-compose.test.yml down
 ```
 
+### Performance Benchmarking
+
+Run the included benchmark script to measure rate limiter overhead:
+
+```bash
+# Start Redis
+docker run -d -p 6379:6379 redis:latest
+
+# Run benchmark (measures overhead vs baseline)
+./scripts/bench.sh
+
+# Sample output:
+# Baseline P99: 0.0234 secs
+# With rate limiting P99: 0.0289 secs
+# Overhead: 5.5ms
+```
+
+The benchmark uses [hey](https://github.com/rakyll/hey) to measure:
+- Baseline latency (no rate limiting)
+- Rate-limited latency
+- Calculates overhead in milliseconds
+
+Typical overhead: 1-7ms P99 (dominated by Redis network RTT)
+
 ### Docker Development
 
 ```bash
@@ -286,6 +313,14 @@ docker-compose -f examples/docker-compose.yml up
 # Access the app at http://localhost:8000
 # API docs at http://localhost:8000/docs
 ```
+
+## Documentation
+
+- [Algorithm Details](docs/ALGORITHM.md) - Deep dive into GCRA with visual timeline
+- [Security Guide](docs/SECURITY.md) - Production security considerations
+- [Performance Analysis](docs/PERFORMANCE_ANALYSIS.md) - Benchmark results and industry comparison
+- [Complexity Audit](COMPLEXITY_AUDIT.md) - Grug-brain simplification decisions
+- [Improvements Plan](IMPROVEMENTS_PLAN.md) - Roadmap for enhancements
 
 ## License
 
