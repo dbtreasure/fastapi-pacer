@@ -128,21 +128,53 @@ limiter = Limiter(fail_mode="open")
 limiter = Limiter(fail_mode="closed")
 ```
 
-## Response Headers
+## Response Headers and Error Format
 
-When rate limited, responses include standard headers:
+### Rate Limit Headers
+
+All responses include rate limit headers (when `expose_headers=True`):
+
+```http
+HTTP/1.1 200 OK
+RateLimit-Limit: 100
+RateLimit-Remaining: 99
+RateLimit-Reset: 60
+```
+
+- `RateLimit-Limit`: Maximum requests allowed in the time window
+- `RateLimit-Remaining`: Requests remaining in current window
+- `RateLimit-Reset`: Seconds until the limit resets (delta-seconds per spec)
+- `X-RateLimit-Reset`: Unix timestamp of reset time (optional, with `legacy_timestamp_header=True`)
+
+### 429 Rate Limited Response
+
+When rate limited, the response includes:
 
 ```http
 HTTP/1.1 429 Too Many Requests
 Retry-After: 5
 RateLimit-Limit: 100
 RateLimit-Remaining: 0
-RateLimit-Reset: 5
-X-RateLimit-Reset: 1701234567
+RateLimit-Reset: 60
+Content-Type: application/json
 
 {
   "detail": "rate_limited",
   "retry_after_ms": 5000
+}
+```
+
+### 503 Service Unavailable (Fail-Closed Mode)
+
+When Redis is unavailable and `fail_mode="closed"`:
+
+```http
+HTTP/1.1 503 Service Unavailable
+Retry-After: 5
+Content-Type: application/json
+
+{
+  "detail": "Service temporarily unavailable"
 }
 ```
 

@@ -56,7 +56,7 @@ Issues = "https://github.com/dan/fastapi-pacer/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"pacer.lua" = ["*.lua"]
+pacer = ["lua/*.lua"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
