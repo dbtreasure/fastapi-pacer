@@ -28,8 +28,14 @@ echo "Redis URL: $REDIS_URL"
 echo ""
 
 # Check dependencies
-if ! command -v uvicorn &> /dev/null; then
-    echo -e "${RED}Error: uvicorn not found. Install with: pip install uvicorn${NC}"
+if ! command -v uv &> /dev/null; then
+    echo -e "${RED}Error: uv not found. Install from: https://github.com/astral-sh/uv${NC}"
+    exit 1
+fi
+
+# Check if uvicorn is available in the project
+if ! uv run python -c "import uvicorn" 2>/dev/null; then
+    echo -e "${RED}Error: uvicorn not found in project. Install with: uv pip install uvicorn${NC}"
     exit 1
 fi
 
@@ -50,10 +56,32 @@ fi
 
 # Check Redis connectivity
 echo -e "${YELLOW}Checking Redis connection...${NC}"
-if ! redis-cli -u "$REDIS_URL" ping > /dev/null 2>&1; then
-    echo -e "${RED}Error: Cannot connect to Redis at $REDIS_URL${NC}"
-    echo "Start Redis with: docker run -d -p 6379:6379 redis:latest"
-    exit 1
+# Try different methods to check Redis
+if command -v redis-cli &> /dev/null; then
+    if ! redis-cli -u "$REDIS_URL" ping > /dev/null 2>&1; then
+        echo -e "${RED}Error: Cannot connect to Redis at $REDIS_URL${NC}"
+        echo "Start Redis with: docker run -d -p 6379:6379 redis:latest"
+        exit 1
+    fi
+elif command -v nc &> /dev/null; then
+    # Use netcat to check if port is open
+    REDIS_HOST=$(echo "$REDIS_URL" | sed 's|redis://||' | cut -d: -f1)
+    REDIS_PORT=$(echo "$REDIS_URL" | sed 's|redis://||' | cut -d: -f2 | cut -d/ -f1)
+    if ! nc -z "$REDIS_HOST" "$REDIS_PORT" 2>/dev/null; then
+        echo -e "${RED}Error: Cannot connect to Redis at $REDIS_HOST:$REDIS_PORT${NC}"
+        echo "Start Redis with: docker run -d -p 6379:6379 redis:latest"
+        exit 1
+    fi
+elif command -v uv &> /dev/null; then
+    # Use uv run python to check Redis (uses project environment)
+    if ! uv run python -c "import redis; r = redis.from_url('$REDIS_URL'); r.ping()" 2>/dev/null; then
+        echo -e "${RED}Error: Cannot connect to Redis at $REDIS_URL${NC}"
+        echo "Start Redis with: docker run -d -p 6379:6379 redis:latest"
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}Warning: Cannot verify Redis connection (redis-cli not installed)${NC}"
+    echo "Proceeding anyway..."
 fi
 echo -e "${GREEN}✓ Redis connected${NC}"
 echo ""
@@ -64,8 +92,8 @@ sleep 1
 
 # Start the benchmark app
 echo -e "${YELLOW}Starting benchmark app with $WORKERS workers...${NC}"
-cd "$(dirname "$0")"
-REDIS_URL="$REDIS_URL" uvicorn bench_app:app \
+cd "$(dirname "$0")/.."  # Go to project root
+REDIS_URL="$REDIS_URL" uv run uvicorn scripts.bench_app:app \
     --host 0.0.0.0 \
     --port "$PORT" \
     --workers "$WORKERS" \
@@ -105,10 +133,10 @@ run_benchmark() {
         # Extract metrics
         echo "$result" | grep -E "Requests/sec:|Latencies \[mean"
         
-        # Get percentiles
-        p50=$(echo "$result" | grep "50%" | awk '{print $2}')
-        p90=$(echo "$result" | grep "90%" | awk '{print $2}')
-        p99=$(echo "$result" | grep "99%" | awk '{print $2}')
+        # Get percentiles (hey outputs them in a specific format)
+        p50=$(echo "$result" | grep "50% in" | awk '{print $3, $4}')
+        p90=$(echo "$result" | grep "90% in" | awk '{print $3, $4}')
+        p99=$(echo "$result" | grep "99% in" | awk '{print $3, $4}')
         
         echo "Latencies:"
         echo "  P50: $p50"
@@ -149,28 +177,36 @@ echo -e "${GREEN}Rate Limiter Overhead${NC}"
 echo "================================"
 
 if command -v hey &> /dev/null && [ -n "$BASELINE_P99" ] && [ -n "$LIMITED_P99" ]; then
-    # Convert to microseconds for calculation
-    baseline_us=$(echo "$BASELINE_P99" | sed 's/s$//' | awk '{print $1 * 1000000}')
-    limited_us=$(echo "$LIMITED_P99" | sed 's/s$//' | awk '{print $1 * 1000000}')
-    overhead_us=$(echo "$limited_us - $baseline_us" | bc 2>/dev/null || echo "N/A")
+    # Extract numeric value from "X.XXXX secs" format
+    baseline_val=$(echo "$BASELINE_P99" | awk '{print $1}')
+    limited_val=$(echo "$LIMITED_P99" | awk '{print $1}')
     
-    if [ "$overhead_us" != "N/A" ]; then
-        echo "P99 Overhead: ${overhead_us}μs"
-        
-        # Check if we meet the <150μs target
-        if (( $(echo "$overhead_us < 150" | bc -l) )); then
-            echo -e "${GREEN}✓ Meets <150μs P99 target${NC}"
-        else
-            echo -e "${YELLOW}⚠ Exceeds 150μs P99 target${NC}"
+    # Convert to microseconds for calculation
+    if [ -n "$baseline_val" ] && [ -n "$limited_val" ]; then
+        baseline_us=$(echo "$baseline_val * 1000000" | bc 2>/dev/null || echo "0")
+        limited_us=$(echo "$limited_val * 1000000" | bc 2>/dev/null || echo "0")
+        overhead_us=$(echo "$limited_us - $baseline_us" | bc 2>/dev/null || echo "N/A")
+    
+        if [ "$overhead_us" != "N/A" ]; then
+            echo "P99 Overhead: ${overhead_us}μs"
+            
+            # Check if we meet the <150μs target
+            if (( $(echo "$overhead_us < 150" | bc -l) )); then
+                echo -e "${GREEN}✓ Meets <150μs P99 target${NC}"
+            else
+                echo -e "${YELLOW}⚠ Exceeds 150μs P99 target${NC}"
+            fi
         fi
     fi
 fi
 
-# Get Redis stats
-echo ""
-echo -e "${GREEN}Redis Operations${NC}"
-echo "------------------------"
-redis-cli -u "$REDIS_URL" --stat -i 1 -r 3 2>/dev/null | tail -3 || true
+# Get Redis stats (if redis-cli available)
+if command -v redis-cli &> /dev/null; then
+    echo ""
+    echo -e "${GREEN}Redis Operations${NC}"
+    echo "------------------------"
+    redis-cli -u "$REDIS_URL" --stat -i 1 -r 3 2>/dev/null | tail -3 || true
+fi
 
 # Cleanup
 echo ""

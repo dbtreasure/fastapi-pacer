@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 
 from pacer import Limiter, LimiterMiddleware, Rate, limit
+from pacer.dependencies import set_limiter
 
 # Get Redis URL from environment
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -21,6 +22,9 @@ limiter = Limiter(
     connect_timeout_ms=500,
     command_timeout_ms=50,
 )
+
+# Set global limiter for dependency injection
+set_limiter(limiter)
 
 
 @asynccontextmanager
