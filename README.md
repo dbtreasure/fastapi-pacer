@@ -5,7 +5,7 @@ A production-ready, high-performance rate limiter for FastAPI applications using
 ## Features
 
 - **GCRA Algorithm**: Smooth rate limiting with configurable burst capacity
-- **FastAPI Native**: Drop-in middleware and dependency injection support  
+- **FastAPI Native**: Drop-in middleware and dependency injection support
 - **Redis Backend**: Distributed rate limiting across multiple instances
 - **Atomic Operations**: Single Redis RTT per decision using Lua scripting
 - **Flexible Identity Extraction**: IP-based, API key, user ID, or custom
@@ -100,7 +100,7 @@ limiter = Limiter(
 # Fail-open (default): Allow requests on Redis errors
 limiter = Limiter(fail_mode="open")
 
-# Fail-closed: Deny requests on Redis errors  
+# Fail-closed: Deny requests on Redis errors
 limiter = Limiter(fail_mode="closed")
 ```
 
@@ -179,15 +179,6 @@ Request → Identity Extractor → GCRA Check (Redis+Lua) → Allow/Deny
                               Single RTT
                               Atomic Decision
 ```
-
-## Performance
-
-Benchmarked on AWS c5.xlarge with Redis in same AZ:
-
-- **P50 Overhead**: 45µs
-- **P99 Overhead**: 142µs  
-- **Throughput**: >50k checks/sec per Redis shard
-- **Memory**: O(1) per key (one Redis string)
 
 ## Development
 
