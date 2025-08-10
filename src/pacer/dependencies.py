@@ -82,7 +82,7 @@ def limit(
                         "Retry-After": str(result.retry_after_seconds),
                         "RateLimit-Limit": str((policy or limiter_instance.default_policy).permits),
                         "RateLimit-Remaining": str(max(0, result.remaining)),
-                        "RateLimit-Reset": str(result.reset_timestamp),
+                        "RateLimit-Reset": str(result.reset_seconds),
                     },
                 )
 

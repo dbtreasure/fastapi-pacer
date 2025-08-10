@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,20 @@ from pacer.policies import Rate
 from pacer.storage import RedisStorage
 
 logger = logging.getLogger(__name__)
+
+# Hook type definitions for observability
+OnDecisionHook = Callable[[Request, str, "RateLimitResult", float], None]
+OnErrorHook = Callable[[Request, Exception, float], None]
+
+
+def _noop_on_decision(request: Request, key: str, result: "RateLimitResult", duration_ms: float) -> None:
+    """Default no-op hook for rate limit decisions."""
+    pass
+
+
+def _noop_on_error(request: Request, error: Exception, duration_ms: float) -> None:
+    """Default no-op hook for errors."""
+    pass
 
 
 @dataclass
@@ -31,6 +46,11 @@ class RateLimitResult:
     def reset_timestamp(self) -> int:
         """Get reset time as Unix timestamp."""
         return int(time.time()) + (self.reset_ms // 1000)
+
+    @property
+    def reset_seconds(self) -> int:
+        """Get reset time as delta-seconds from now (for RateLimit-Reset header)."""
+        return max(1, self.reset_ms // 1000)
 
 
 @dataclass
@@ -76,6 +96,9 @@ class Limiter:
         connect_timeout_ms: int = 1000,
         command_timeout_ms: int = 100,
         cluster_mode: bool = False,
+        legacy_timestamp_header: bool = False,
+        on_decision: OnDecisionHook | None = None,
+        on_error: OnErrorHook | None = None,
     ):
         # Validate inputs
         if fail_mode not in ("open", "closed"):
@@ -89,6 +112,11 @@ class Limiter:
         self.app_name = app_name
         self.route_scope = route_scope
         self.expose_headers = expose_headers
+        self.legacy_timestamp_header = legacy_timestamp_header
+
+        # Observability hooks (default to no-op)
+        self.on_decision = on_decision or _noop_on_decision
+        self.on_error = on_error or _noop_on_error
 
         # Initialize storage
         self.storage = RedisStorage(
@@ -159,6 +187,9 @@ class Limiter:
         # Generate Redis key
         key = policy.key_for(self.app_name, self.route_scope, scope, principal)
 
+        # Track timing for observability
+        start_time = time.time()
+
         try:
             # Check rate limit
             allowed, retry_after_ms, reset_ms, remaining = await self.storage.check_rate_limit(
@@ -168,6 +199,9 @@ class Limiter:
                 ttl_ms=policy.ttl_ms,
             )
 
+            # Calculate duration
+            duration_ms = (time.time() - start_time) * 1000
+
             # Update metrics
             if allowed:
                 self.metrics.requests_allowed += 1
@@ -175,17 +209,34 @@ class Limiter:
                 self.metrics.requests_blocked += 1
                 logger.info(f"Rate limit exceeded for {principal} on {scope}")
 
-            return RateLimitResult(
+            result = RateLimitResult(
                 allowed=allowed,
                 retry_after_ms=retry_after_ms,
                 reset_ms=reset_ms,
                 remaining=remaining,
             )
 
+            # Call decision hook for observability
+            try:
+                self.on_decision(request, key, result, duration_ms)
+            except Exception as hook_error:
+                logger.warning(f"Decision hook failed: {hook_error}")
+
+            return result
+
         except Exception as e:
+            # Calculate duration
+            duration_ms = (time.time() - start_time) * 1000
+
             # Handle Redis errors
             logger.error(f"Rate limit check failed: {e}")
             self.metrics.redis_errors += 1
+
+            # Call error hook for observability
+            try:
+                self.on_error(request, e, duration_ms)
+            except Exception as hook_error:
+                logger.warning(f"Error hook failed: {hook_error}")
 
             # Apply fail mode
             if self.fail_mode == "open":
@@ -236,7 +287,13 @@ class Limiter:
         # Add standard headers
         response.headers["RateLimit-Limit"] = str(policy.permits)
         response.headers["RateLimit-Remaining"] = str(max(0, result.remaining))
-        response.headers["RateLimit-Reset"] = str(result.reset_timestamp)
+
+        # RateLimit-Reset: Use delta-seconds (spec compliant)
+        response.headers["RateLimit-Reset"] = str(result.reset_seconds)
+
+        # Optional: Add X-RateLimit-Reset with Unix timestamp for compatibility
+        if self.legacy_timestamp_header:
+            response.headers["X-RateLimit-Reset"] = str(result.reset_timestamp)
 
         # Add Retry-After header if rate limited
         if not result.allowed:

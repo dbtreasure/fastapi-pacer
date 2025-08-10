@@ -6,7 +6,7 @@ This module provides backward compatibility. New code should import from:
 """
 
 import logging
-from typing import Any, Union
+from typing import Any
 
 from pacer.storage_simple import SimpleRedisStorage
 
@@ -35,7 +35,7 @@ class RedisStorage:
             try:
                 from pacer.storage_cluster import RedisClusterStorage
                 logger.info("Using Redis Cluster storage backend")
-                self._storage: Union[SimpleRedisStorage, Any] = RedisClusterStorage(
+                self._storage: SimpleRedisStorage | Any = RedisClusterStorage(
                     redis_url=redis_url,
                     connect_timeout_ms=connect_timeout_ms,
                     command_timeout_ms=command_timeout_ms,
