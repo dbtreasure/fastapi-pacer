@@ -67,7 +67,7 @@ class RedisStorage:
     async def disconnect(self) -> None:
         """Close Redis connection."""
         if self._client:
-            await self._client.close()
+            await self._client.aclose()
             self._connected = False
             logger.info("Disconnected from Redis")
 
@@ -141,7 +141,7 @@ class RedisStorage:
             except ResponseError as e:
                 logger.error(f"Redis script error: {e}")
                 raise
-        
+
         # This should never be reached due to the raises above, but satisfies type checker
         raise RuntimeError("Unexpected error in rate limit check")
 

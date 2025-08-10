@@ -1,5 +1,9 @@
 
+import asyncio
+import time
+
 import pytest
+import redis.asyncio as redis
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import (
@@ -8,6 +12,9 @@ from hypothesis.stateful import (
     rule,
     run_state_machine_as_test,
 )
+
+from pacer.policies import Rate
+from pacer.storage import RedisStorage
 
 
 class TestGCRAAlgorithm:
@@ -177,6 +184,102 @@ class GCRAStateMachine(RuleBasedStateMachine):
             # burst_capacity in the future from TAT
             _ = self.tat - self.burst_capacity
             # This is implicitly checked in make_request
+
+
+class TestRedisTTL:
+    """Test Redis TTL functionality."""
+    
+    @pytest.mark.asyncio
+    async def test_key_expires_with_ttl(self):
+        """Test that Redis keys expire according to TTL."""
+        # Create storage and connect
+        storage = RedisStorage(redis_url="redis://localhost:6379")
+        await storage.connect()
+        
+        try:
+            # Create a rate with short TTL (2 seconds)
+            rate = Rate(permits=10, per="1s", burst=0)
+            key = rate.key_for("test", "ttl", "endpoint", "test-user")
+            
+            # Make a request to set the key
+            emission_interval_ms = rate.emission_interval_ms
+            burst_capacity_ms = rate.burst_capacity_ms
+            ttl_ms = 2000  # 2 seconds TTL
+            
+            allowed, _, _, _ = await storage.check_rate_limit(
+                key=key,
+                emission_interval_ms=emission_interval_ms,
+                burst_capacity_ms=burst_capacity_ms,
+                ttl_ms=ttl_ms,
+            )
+            assert allowed
+            
+            # Verify key exists
+            client = storage._client
+            assert client is not None
+            exists = await client.exists(key)
+            assert exists == 1
+            
+            # Check TTL is set correctly (should be close to 2000ms)
+            ttl_remaining = await client.pttl(key)
+            assert 1500 <= ttl_remaining <= 2000
+            
+            # Wait for key to expire
+            await asyncio.sleep(2.5)
+            
+            # Verify key has expired
+            exists = await client.exists(key)
+            assert exists == 0
+            
+        finally:
+            await storage.disconnect()
+    
+    @pytest.mark.asyncio
+    async def test_ttl_refreshes_on_new_request(self):
+        """Test that TTL is refreshed when a new request is made."""
+        storage = RedisStorage(redis_url="redis://localhost:6379")
+        await storage.connect()
+        
+        try:
+            rate = Rate(permits=10, per="1s", burst=0)
+            key = rate.key_for("test", "ttl", "refresh", "test-user")
+            
+            emission_interval_ms = rate.emission_interval_ms
+            burst_capacity_ms = rate.burst_capacity_ms
+            ttl_ms = 3000  # 3 seconds TTL
+            
+            # First request
+            await storage.check_rate_limit(
+                key=key,
+                emission_interval_ms=emission_interval_ms,
+                burst_capacity_ms=burst_capacity_ms,
+                ttl_ms=ttl_ms,
+            )
+            
+            # Wait 1.5 seconds
+            await asyncio.sleep(1.5)
+            
+            # Check TTL before second request
+            client = storage._client
+            assert client is not None
+            ttl_before = await client.pttl(key)
+            assert 1000 <= ttl_before <= 1600
+            
+            # Second request should refresh TTL
+            await storage.check_rate_limit(
+                key=key,
+                emission_interval_ms=emission_interval_ms,
+                burst_capacity_ms=burst_capacity_ms,
+                ttl_ms=ttl_ms,
+            )
+            
+            # Check TTL after second request
+            ttl_after = await client.pttl(key)
+            assert 2500 <= ttl_after <= 3000
+            assert ttl_after > ttl_before
+            
+        finally:
+            await storage.disconnect()
 
 
 @pytest.mark.hypothesis

@@ -1,6 +1,7 @@
 import logging
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable, Any
+from typing import Any
 
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import JSONResponse
