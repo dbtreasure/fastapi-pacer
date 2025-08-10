@@ -117,7 +117,7 @@ X-RateLimit-Policy: 100;w=60s;burst=10
 5. ✅ Document TTL math
 6. ✅ Add GCRA diagram
 
-### Phase 3: Enhancements (1 hour)
+### Phase 3: Enhancements (1 hour) ✅ COMPLETED
 7. ✅ Add optional Policy header
 8. ✅ Document proxy security
 
