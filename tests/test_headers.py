@@ -1,5 +1,7 @@
 """Test rate limit headers functionality."""
 
+from contextlib import asynccontextmanager
+
 import pytest
 from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -11,27 +13,25 @@ from pacer.dependencies import get_limiter
 @pytest.fixture
 async def app_with_policy_header():
     """Create test app with policy header enabled."""
-    app = FastAPI()
-
     limiter = Limiter(
         redis_url="redis://localhost:6379",
         expose_headers=True,
         expose_policy_header=True,  # Enable policy header
     )
 
-    # Store limiter for dependency injection
-    app.state.limiter = limiter
-
-    @app.on_event("startup")
-    async def startup():
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
         await limiter.startup()
-
-    @app.on_event("shutdown")
-    async def shutdown():
+        yield
         # Clear all keys to avoid interference between tests
         if limiter.storage.redis:
             await limiter.storage.redis.flushdb()
         await limiter.shutdown()
+
+    app = FastAPI(lifespan=lifespan)
+
+    # Store limiter for dependency injection
+    app.state.limiter = limiter
 
     # Override dependency
     def get_test_limiter():
@@ -57,26 +57,24 @@ async def app_with_policy_header():
 @pytest.fixture
 async def app_without_policy_header():
     """Create test app without policy header."""
-    app = FastAPI()
-
     limiter = Limiter(
         redis_url="redis://localhost:6379",
         expose_headers=True,
         expose_policy_header=False,  # Disable policy header (default)
     )
 
-    app.state.limiter = limiter
-
-    @app.on_event("startup")
-    async def startup():
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
         await limiter.startup()
-
-    @app.on_event("shutdown")
-    async def shutdown():
+        yield
         # Clear all keys to avoid interference between tests
         if limiter.storage.redis:
             await limiter.storage.redis.flushdb()
         await limiter.shutdown()
+
+    app = FastAPI(lifespan=lifespan)
+
+    app.state.limiter = limiter
 
     # Override dependency
     def get_test_limiter():
@@ -94,26 +92,23 @@ async def app_without_policy_header():
 @pytest.fixture
 async def app_with_legacy_header():
     """Create test app with legacy timestamp header."""
-    app = FastAPI()
-
     limiter = Limiter(
         redis_url="redis://localhost:6379",
         expose_headers=True,
         legacy_timestamp_header=True,  # Enable legacy header
     )
 
-    app.state.limiter = limiter
-
-    @app.on_event("startup")
-    async def startup():
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
         await limiter.startup()
-
-    @app.on_event("shutdown")
-    async def shutdown():
+        yield
         # Clear all keys to avoid interference between tests
         if limiter.storage.redis:
             await limiter.storage.redis.flushdb()
         await limiter.shutdown()
+
+    app = FastAPI(lifespan=lifespan)
+    app.state.limiter = limiter
 
     # Override dependency
     def get_test_limiter():
@@ -155,7 +150,7 @@ class TestRateLimitHeaders:
             limiter = app_with_legacy_header.state.limiter
             if limiter.storage.redis:
                 await limiter.storage.redis.flushdb()
-            
+
             response = await client.get("/")
 
             assert response.status_code == 200

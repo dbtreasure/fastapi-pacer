@@ -36,6 +36,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
 from pacer import Limiter, Policy, Rate, compose, key_api_key, key_ip, limit, set_limiter
+from pacer.otel import OTelHooks
 
 # Configure OpenTelemetry
 resource = Resource.create({
@@ -76,8 +77,6 @@ request_duration = meter.create_histogram(
 
 
 # Create OTel hooks for rate limiter
-from pacer.otel import OTelHooks
-
 otel_hooks = OTelHooks(
     service_name="fastapi-pacer-demo",
     include_request_attrs=True,
@@ -147,13 +146,13 @@ async def root():
     """Unprotected endpoint for testing."""
     with tracer.start_as_current_span("process_root_request") as span:
         span.set_attribute("endpoint", "root")
-        
+
         # Simulate some work
         await asyncio.sleep(random.uniform(0.01, 0.05))
-        
+
         # Record business metric
         request_counter.add(1, {"endpoint": "root", "protected": "false"})
-        
+
         return {"message": "Hello from OTel demo!"}
 
 
@@ -163,15 +162,15 @@ async def normal_endpoint(request: Request):
     with tracer.start_as_current_span("process_normal_request") as span:
         span.set_attribute("endpoint", "normal")
         span.set_attribute("client_ip", request.client.host if request.client else "unknown")
-        
+
         # Simulate work
         duration = random.uniform(0.02, 0.1)
         await asyncio.sleep(duration)
-        
+
         # Record metrics
         request_counter.add(1, {"endpoint": "normal", "protected": "true"})
         request_duration.record(duration * 1000, {"endpoint": "normal"})
-        
+
         return {"endpoint": "normal", "policy": "100/min"}
 
 
@@ -180,15 +179,15 @@ async def strict_endpoint(request: Request):
     """Strict rate limit endpoint."""
     with tracer.start_as_current_span("process_strict_request") as span:
         span.set_attribute("endpoint", "strict")
-        
+
         # Simulate work
         duration = random.uniform(0.05, 0.2)
         await asyncio.sleep(duration)
-        
+
         # Record metrics
         request_counter.add(1, {"endpoint": "strict", "protected": "true"})
         request_duration.record(duration * 1000, {"endpoint": "strict"})
-        
+
         return {"endpoint": "strict", "policy": "10/min, 2/10s"}
 
 
@@ -199,15 +198,15 @@ async def api_endpoint(request: Request):
         api_key = request.headers.get("X-API-Key", "none")
         span.set_attribute("endpoint", "api")
         span.set_attribute("has_api_key", api_key != "none")
-        
+
         # Simulate work
         duration = random.uniform(0.01, 0.05)
         await asyncio.sleep(duration)
-        
+
         # Record metrics
         request_counter.add(1, {"endpoint": "api", "protected": "true"})
         request_duration.record(duration * 1000, {"endpoint": "api"})
-        
+
         return {"endpoint": "api", "api_key_present": api_key != "none"}
 
 
@@ -216,15 +215,15 @@ async def composed_endpoint(request: Request):
     """Endpoint with composed selector (IP + API key)."""
     with tracer.start_as_current_span("process_composed_request") as span:
         span.set_attribute("endpoint", "composed")
-        
+
         # Simulate work
         duration = random.uniform(0.03, 0.08)
         await asyncio.sleep(duration)
-        
+
         # Record metrics
         request_counter.add(1, {"endpoint": "composed", "protected": "true"})
         request_duration.record(duration * 1000, {"endpoint": "composed"})
-        
+
         return {"endpoint": "composed", "selector": "ip+api_key"}
 
 
@@ -256,9 +255,9 @@ async def load_test():
             "normal": {"success": 0, "rate_limited": 0},
             "strict": {"success": 0, "rate_limited": 0},
         }
-        
+
         # Generate 20 requests to each endpoint
-        for i in range(20):
+        for _ in range(20):
             # Test normal endpoint
             try:
                 from httpx import AsyncClient
@@ -270,7 +269,7 @@ async def load_test():
                         results["normal"]["rate_limited"] += 1
             except Exception as e:
                 span.record_exception(e)
-            
+
             # Test strict endpoint
             try:
                 async with AsyncClient() as client:
@@ -281,19 +280,19 @@ async def load_test():
                         results["strict"]["rate_limited"] += 1
             except Exception as e:
                 span.record_exception(e)
-            
+
             # Small delay between requests
             await asyncio.sleep(0.1)
-        
+
         span.set_attribute("load_test.total_requests", 40)
         span.set_attribute("load_test.results", str(results))
-        
+
         return results
 
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     print("=== FastAPI Pacer OpenTelemetry Demo ===")
     print()
     print("Make sure OTel stack is running:")
@@ -313,5 +312,5 @@ if __name__ == "__main__":
     print("Generate load:")
     print("  curl http://localhost:8000/load-test")
     print()
-    
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

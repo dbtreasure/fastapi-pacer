@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 class Rate:
     """
     Individual rate limit configuration.
-    
+
     Args:
         permits: Number of requests allowed
         per: Time period (e.g., "1s", "10s", "1m", "1h", "1d")
@@ -84,7 +84,7 @@ Selector = Callable[["Request"], str]
 class Policy:
     """
     Rate limiting policy with support for multiple rates.
-    
+
     Args:
         rates: List of rate limits (1-3 rates, all must pass)
         key: Selector function or string shorthand ("ip", "api_key", "user")
@@ -111,7 +111,7 @@ class Policy:
     def generate_keys(self, app: str, scope: str, route: str, principal: str) -> list[str]:
         """
         Generate Redis keys for all rates in this policy.
-        
+
         All keys share the same hash tag for Redis cluster compatibility.
         Each rate gets a unique suffix to maintain separate TAT values.
         """

@@ -25,13 +25,13 @@ except ImportError:
 class OTelHooks:
     """
     OpenTelemetry hooks for rate limiter observability.
-    
+
     Provides metrics and tracing for rate limit decisions and errors.
     If OpenTelemetry is not installed, all methods are no-ops.
-    
+
     Usage:
         otel_hooks = OTelHooks(service_name="my-api")
-        
+
         limiter = Limiter(
             redis_url="redis://localhost:6379",
             on_decision=otel_hooks.on_decision,
@@ -49,7 +49,7 @@ class OTelHooks:
     ):
         """
         Initialize OpenTelemetry hooks.
-        
+
         Args:
             service_name: Service name for metrics and traces
             meter_name: Custom meter name (defaults to service_name)
@@ -62,6 +62,10 @@ class OTelHooks:
         self.tracer_name = tracer_name or service_name
         self.include_request_attrs = include_request_attrs
         self.include_policy_attrs = include_policy_attrs
+
+        # Type annotations for meter and tracer
+        self._meter: Any = None
+        self._tracer: Any = None
 
         if OTEL_AVAILABLE:
             # Get meter for metrics
@@ -100,9 +104,6 @@ class OTelHooks:
 
             # Get tracer for distributed tracing
             self._tracer = trace.get_tracer(self.tracer_name)
-        else:
-            self._meter = None
-            self._tracer = None
 
     def on_decision(
         self,
@@ -113,7 +114,7 @@ class OTelHooks:
     ) -> None:
         """
         Hook called after rate limit decision.
-        
+
         Records metrics and spans for the rate limit check.
         """
         if not OTEL_AVAILABLE:
@@ -135,7 +136,7 @@ class OTelHooks:
         # Add span event to current trace if active
         current_span = trace.get_current_span()
         if current_span and current_span.is_recording():
-            event_attrs = {
+            event_attrs: dict[str, Any] = {
                 "rate_limit.allowed": result.allowed,
                 "rate_limit.remaining": result.remaining,
                 "rate_limit.duration_ms": duration_ms,
@@ -162,7 +163,7 @@ class OTelHooks:
     ) -> None:
         """
         Hook called on rate limit errors.
-        
+
         Records error metrics and spans.
         """
         if not OTEL_AVAILABLE:
@@ -248,13 +249,13 @@ def create_otel_hooks(
 ) -> tuple[Any, Any]:
     """
     Create OpenTelemetry hooks for rate limiter.
-    
+
     Returns a tuple of (on_decision, on_error) hooks.
     If OpenTelemetry is not available, returns no-op functions.
-    
+
     Usage:
         on_decision, on_error = create_otel_hooks("my-api")
-        
+
         limiter = Limiter(
             redis_url="redis://localhost:6379",
             on_decision=on_decision,

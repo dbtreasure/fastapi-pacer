@@ -7,7 +7,7 @@ import time
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from pacer import Limiter, Rate, limit
+from pacer import Limiter, Policy, Rate, limit
 from pacer.dependencies import set_limiter
 
 
@@ -17,7 +17,7 @@ async def measure_overhead():
     # Setup limiter
     limiter = Limiter(
         redis_url="redis://localhost:6379",
-        default_policy=Rate(permits=10000, per="1s", burst=1000),
+        default_policy=Policy(rates=[Rate(10000, "1s", burst=1000)], key="ip", name="overhead_test"),
         fail_mode="open",
         expose_headers=False,
         connect_timeout_ms=100,

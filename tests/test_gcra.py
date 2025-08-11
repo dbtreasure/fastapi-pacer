@@ -1,11 +1,11 @@
 """Test GCRA algorithm implementation."""
 
 import asyncio
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from pacer import Limiter, Policy, Rate
-from pacer.storage_simple import SimpleRedisStorage
 
 
 class TestGCRAAlgorithm:
@@ -133,7 +133,7 @@ class TestGCRABehavior:
                 key="ip",
                 name="burst_test"
             )
-            
+
             # Clear any existing key
             key = policy.generate_keys("pacer", "route", "/test", "192.168.1.1")[0]
             if limiter.storage.redis:
@@ -270,7 +270,7 @@ class TestGCRABehavior:
         await limiter.startup()
 
         try:
-            # Very short rate limit for TTL testing  
+            # Very short rate limit for TTL testing
             policy = Policy(
                 rates=[Rate(permits=2, per="1s", burst=0)],
                 key="ip",

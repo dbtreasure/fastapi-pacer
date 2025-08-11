@@ -55,7 +55,7 @@ def limit(
         @app.get("/api/items", dependencies=[Depends(limit(Policy(rates=[Rate(100, "1m")])))])
         async def get_items():
             return {"items": []}
-        
+
         # With Rate (backward compat)
         @app.get("/api/items", dependencies=[Depends(limit(Rate(100, "1m")))])
         async def get_items():
@@ -144,7 +144,7 @@ class RateLimitDecorator:
     def __init__(self, policy: Policy | Rate | None = None, limiter: "Limiter | None" = None):
         # Convert Rate to Policy if needed for backward compatibility
         if isinstance(policy, Rate):
-            self.policy = Policy(rates=[policy], key="ip", name="decorator")
+            self.policy: Policy | None = Policy(rates=[policy], key="ip", name="decorator")
         else:
             self.policy = policy
         self.limiter = limiter
@@ -202,7 +202,7 @@ def rate_limit(
         @rate_limit(Policy(rates=[Rate(100, "1m")]))
         async def get_items():
             return {"items": []}
-        
+
         # With Rate (backward compat)
         @app.get("/api/items")
         @rate_limit(Rate(100, "1m"))

@@ -352,7 +352,7 @@ class Limiter:
     ) -> RateLimitResult:
         """
         Check if a request is within rate limits.
-        
+
         This method maintains backward compatibility with Rate objects
         while supporting the new Policy API.
 

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class SimpleRedisStorage:
     """
     Simple Redis storage backend for rate limiting with multi-rate GCRA.
-    
+
     This is the recommended storage backend for most applications.
     For Redis Cluster support, use RedisClusterStorage instead.
     """
@@ -86,12 +86,12 @@ class SimpleRedisStorage:
     ) -> tuple[bool, int, int, int, int]:
         """
         Check if request is allowed under the policy.
-        
+
         Args:
             keys: Redis keys for each rate in the policy
             policy: The policy to check against
             now_ms: Current time in milliseconds (for testing)
-        
+
         Returns:
             Tuple of (allowed, retry_after_ms, reset_ms, remaining, matched_rate_index)
         """
@@ -126,8 +126,8 @@ class SimpleRedisStorage:
             # Execute script with EVALSHA
             if not self._client or not self._script_sha:
                 raise RuntimeError("Storage not properly initialized")
-                
-            result = await self._client.evalsha(
+
+            result = await self._client.evalsha(  # type: ignore[misc]
                 self._script_sha,
                 3,  # Always pass 3 keys (some may be empty)
                 *padded_keys[:3],  # Always pass 3 key slots

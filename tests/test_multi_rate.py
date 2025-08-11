@@ -1,11 +1,10 @@
 """Tests for multi-rate limiting functionality."""
 
-import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from pacer import Limiter, Policy, Rate
-from pacer.storage_simple import SimpleRedisStorage
 
 
 @pytest.mark.asyncio
@@ -19,25 +18,25 @@ class TestMultiRate:
             key="ip",
             name="single",
         )
-        
+
         limiter = Limiter(redis_url="redis://localhost:6379")
-        
+
         # Mock storage
         with patch.object(limiter.storage, 'check_policy', new_callable=AsyncMock) as mock_check:
             mock_check.return_value = (True, 0, 1000, 9, 0)
-            
+
             request = MagicMock()
             request.client.host = "127.0.0.1"
             request.headers = {}
             request.url.path = "/test"
             request.method = "GET"
-            
+
             result = await limiter.check_policy(request, policy)
-            
+
             assert result.allowed is True
             assert result.remaining == 9
             assert result.matched_rate_index == 0
-            
+
             # Verify correct keys were generated
             mock_check.assert_called_once()
             keys = mock_check.call_args[1]['keys']
@@ -55,25 +54,25 @@ class TestMultiRate:
             key="ip",
             name="multi",
         )
-        
+
         limiter = Limiter(redis_url="redis://localhost:6379")
-        
+
         with patch.object(limiter.storage, 'check_policy', new_callable=AsyncMock) as mock_check:
             # All rates pass, second rate (10/1s) is most restrictive
             mock_check.return_value = (True, 0, 1000, 5, 1)
-            
+
             request = MagicMock()
             request.client.host = "127.0.0.1"
             request.headers = {}
             request.url.path = "/test"
             request.method = "GET"
-            
+
             result = await limiter.check_policy(request, policy)
-            
+
             assert result.allowed is True
             assert result.remaining == 5
             assert result.matched_rate_index == 1  # Second rate
-            
+
             # Verify 3 keys were generated
             keys = mock_check.call_args[1]['keys']
             assert len(keys) == 3
@@ -92,21 +91,21 @@ class TestMultiRate:
             key="ip",
             name="multi",
         )
-        
+
         limiter = Limiter(redis_url="redis://localhost:6379")
-        
+
         with patch.object(limiter.storage, 'check_policy', new_callable=AsyncMock) as mock_check:
             # Second rate denies
             mock_check.return_value = (False, 500, 1000, 0, 1)
-            
+
             request = MagicMock()
             request.client.host = "127.0.0.1"
             request.headers = {}
             request.url.path = "/test"
             request.method = "GET"
-            
+
             result = await limiter.check_policy(request, policy)
-            
+
             assert result.allowed is False
             assert result.retry_after_ms == 500
             assert result.remaining == 0
@@ -119,32 +118,32 @@ class TestMultiRate:
             key="ip",
             name="by_ip",
         )
-        
+
         api_key_policy = Policy(
             rates=[Rate(1000, "1m")],
-            key="api_key", 
+            key="api_key",
             name="by_api_key",
         )
-        
+
         limiter = Limiter(redis_url="redis://localhost:6379")
-        
+
         with patch.object(limiter.storage, 'check_policy', new_callable=AsyncMock) as mock_check:
             mock_check.return_value = (True, 0, 1000, 99, 0)
-            
+
             request = MagicMock()
             request.client.host = "192.168.1.1"
             request.headers = {"X-API-Key": "test-key"}
             request.url.path = "/test"
             request.method = "GET"
             request.query_params = {}
-            
+
             # Check IP-based policy
-            result = await limiter.check_policy(request, ip_policy)
+            await limiter.check_policy(request, ip_policy)
             keys = mock_check.call_args[1]['keys']
             assert "192.168.1.1" in keys[0]
-            
+
             # Check API key-based policy
-            result = await limiter.check_policy(request, api_key_policy)
+            await limiter.check_policy(request, api_key_policy)
             keys = mock_check.call_args[1]['keys']
             # API key should be hashed
             assert "192.168.1.1" not in keys[0]
@@ -153,18 +152,18 @@ class TestMultiRate:
     async def test_composed_selector(self):
         """Test policy with composed selector."""
         from pacer.selectors import compose, key_ip, key_user
-        
+
         policy = Policy(
             rates=[Rate(50, "1m")],
             key=compose(key_user, key_ip),
             name="user_ip",
         )
-        
+
         limiter = Limiter(redis_url="redis://localhost:6379")
-        
+
         with patch.object(limiter.storage, 'check_policy', new_callable=AsyncMock) as mock_check:
             mock_check.return_value = (True, 0, 1000, 49, 0)
-            
+
             request = MagicMock()
             request.client.host = "192.168.1.1"
             request.headers = {}
@@ -172,9 +171,9 @@ class TestMultiRate:
             request.method = "GET"
             request.state = MagicMock()
             request.state.user_id = "user123"
-            
-            result = await limiter.check_policy(request, policy)
-            
+
+            await limiter.check_policy(request, policy)
+
             # Check that key contains both user and IP
             keys = mock_check.call_args[1]['keys']
             assert "user123:192.168.1.1" in keys[0]
@@ -183,25 +182,25 @@ class TestMultiRate:
         """Test policy with custom selector function."""
         def tenant_selector(request):
             return request.headers.get("X-Tenant-ID", "default")
-        
+
         policy = Policy(
             rates=[Rate(200, "1m")],
             key=tenant_selector,
             name="by_tenant",
         )
-        
+
         limiter = Limiter(redis_url="redis://localhost:6379")
-        
+
         with patch.object(limiter.storage, 'check_policy', new_callable=AsyncMock) as mock_check:
             mock_check.return_value = (True, 0, 1000, 199, 0)
-            
+
             request = MagicMock()
             request.headers = {"X-Tenant-ID": "tenant456"}
             request.url.path = "/test"
             request.method = "GET"
-            
-            result = await limiter.check_policy(request, policy)
-            
+
+            await limiter.check_policy(request, policy)
+
             # Check that tenant ID is in the key
             keys = mock_check.call_args[1]['keys']
             assert "tenant456" in keys[0]
@@ -217,27 +216,27 @@ class TestMultiRate:
             key="ip",
             name="multi",
         )
-        
+
         limiter = Limiter(redis_url="redis://localhost:6379", expose_headers=True)
-        
+
         with patch.object(limiter.storage, 'check_policy', new_callable=AsyncMock) as mock_check:
             # Second rate (100/1m) is most restrictive with 10 remaining
             mock_check.return_value = (True, 0, 60000, 10, 1)
-            
+
             request = MagicMock()
             request.client.host = "127.0.0.1"
             request.headers = {}
             request.url.path = "/test"
             request.method = "GET"
-            
+
             result = await limiter.check_policy(request, policy)
-            
+
             # Create mock response to add headers
             response = MagicMock()
             response.headers = {}
-            
+
             limiter.add_headers(response, result, policy)
-            
+
             # Headers should reflect the matched rate (100/1m)
             assert response.headers["RateLimit-Limit"] == "100"
             assert response.headers["RateLimit-Remaining"] == "10"

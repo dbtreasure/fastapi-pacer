@@ -1,5 +1,7 @@
 """Test observability hooks functionality."""
 
+from contextlib import asynccontextmanager
+
 import pytest
 from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -23,21 +25,20 @@ class TestObservabilityHooks:
                 "path": request.url.path,
             })
 
-        app = FastAPI()
         limiter = Limiter(
             redis_url="redis://localhost:6379",
             on_decision=capture_decision,
         )
 
-        @app.on_event("startup")
-        async def startup():
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
             await limiter.startup()
-
-        @app.on_event("shutdown")
-        async def shutdown():
+            yield
             if limiter.storage.redis:
                 await limiter.storage.redis.flushdb()
             await limiter.shutdown()
+
+        app = FastAPI(lifespan=lifespan)
 
         @app.get("/test", dependencies=[Depends(limit(Policy(rates=[Rate(10, "1m")], key="ip", name="test"), limiter=limiter))])
         async def test_endpoint():
@@ -68,27 +69,26 @@ class TestObservabilityHooks:
                 "path": request.url.path,
             })
 
-        app = FastAPI()
         limiter = Limiter(
             redis_url="redis://localhost:6379",
             on_decision=capture_decision,
         )
+
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            await limiter.startup()
+            yield
+            if limiter.storage.redis:
+                await limiter.storage.redis.flushdb()
+            await limiter.shutdown()
+
+        app = FastAPI(lifespan=lifespan)
 
         app.add_middleware(
             LimiterMiddleware,
             limiter=limiter,
             policy=Policy(rates=[Rate(permits=10, per="1m")], key="ip", name="middleware"),
         )
-
-        @app.on_event("startup")
-        async def startup():
-            await limiter.startup()
-
-        @app.on_event("shutdown")
-        async def shutdown():
-            if limiter.storage.redis:
-                await limiter.storage.redis.flushdb()
-            await limiter.shutdown()
 
         @app.get("/test")
         async def test_endpoint():
@@ -117,21 +117,20 @@ class TestObservabilityHooks:
                 "retry_after_ms": result.retry_after_ms,
             })
 
-        app = FastAPI()
         limiter = Limiter(
             redis_url="redis://localhost:6379",
             on_decision=capture_decision,
         )
 
-        @app.on_event("startup")
-        async def startup():
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
             await limiter.startup()
-
-        @app.on_event("shutdown")
-        async def shutdown():
+            yield
             if limiter.storage.redis:
                 await limiter.storage.redis.flushdb()
             await limiter.shutdown()
+
+        app = FastAPI(lifespan=lifespan)
 
         # Very low limit to trigger rate limiting
         @app.get("/test", dependencies=[Depends(limit(Policy(rates=[Rate(1, "60s", burst=0)], key="ip", name="test"), limiter=limiter))])

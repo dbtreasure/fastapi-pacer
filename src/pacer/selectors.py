@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def key_ip(request: "Request") -> str:
     """
     Extract client IP address from request.
-    
+
     Handles proxy headers in order of preference:
     1. CF-Connecting-IP (Cloudflare)
     2. X-Real-IP (common proxy header)
@@ -53,7 +53,7 @@ def key_ip(request: "Request") -> str:
 def key_api_key(request: "Request") -> str:
     """
     Extract API key from request headers.
-    
+
     Looks for API key in order:
     1. X-API-Key header (standard)
     2. Authorization: Bearer <token> header
@@ -84,7 +84,7 @@ def key_api_key(request: "Request") -> str:
 def key_user(request: "Request") -> str:
     """
     Extract user ID from request.
-    
+
     Expects user ID to be set by authentication middleware as:
     - request.state.user_id
     - request.state.user.id
@@ -116,7 +116,7 @@ def key_user(request: "Request") -> str:
 def key_org(request: "Request") -> str:
     """
     Extract organization ID from request.
-    
+
     Expects org ID to be set by authentication middleware as:
     - request.state.org_id
     - request.state.organization_id
@@ -148,10 +148,10 @@ def key_org(request: "Request") -> str:
 def compose(*selectors: Callable[["Request"], str]) -> Callable[["Request"], str]:
     """
     Compose multiple selectors into a single selector.
-    
+
     The composed selector concatenates results with ':' separator.
     This allows rate limiting by multiple dimensions.
-    
+
     Example:
         # Rate limit by both user and IP
         policy = Policy(
@@ -182,7 +182,7 @@ def compose(*selectors: Callable[["Request"], str]) -> Callable[["Request"], str
 def _normalize_ip(ip_str: str) -> str:
     """
     Normalize IP address to standard format.
-    
+
     - Removes IPv6 zone IDs
     - Validates IP format
     - Returns consistent representation
@@ -207,7 +207,7 @@ def _normalize_ip(ip_str: str) -> str:
 def _hash_key(key: str) -> str:
     """
     Hash sensitive keys for storage.
-    
+
     Uses SHA-256 truncated to 16 bytes (32 hex chars).
     This provides good distribution while keeping keys short.
     """
@@ -231,10 +231,10 @@ BUILTIN_SELECTORS = {
 def get_selector(key: str | Callable[["Request"], str]) -> Callable[["Request"], str]:
     """
     Get a selector function from string name or callable.
-    
+
     Args:
         key: Either a string name ("ip", "api_key", "user", "org") or a callable
-    
+
     Returns:
         Selector function
     """

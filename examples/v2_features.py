@@ -86,7 +86,7 @@ api_policy = Policy(
 async def get_data(x_api_key: Annotated[str | None, Header()] = None):
     """
     API endpoint with rate limiting by API key.
-    
+
     Try with: curl -H "X-API-Key: test123" http://localhost:8000/api/data
     """
     return {"message": "API data", "api_key": x_api_key is not None}
@@ -144,7 +144,7 @@ user_policy = Policy(
 async def get_user_profile(request: Request):
     """
     User endpoint with per-user rate limiting.
-    
+
     Try with: curl -H "Authorization: Bearer abc123" http://localhost:8000/api/user/profile
     """
     user_id = getattr(request.state, "user_id", None)

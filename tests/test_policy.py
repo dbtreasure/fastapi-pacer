@@ -15,7 +15,7 @@ class TestPolicy:
             key="ip",
             name="single_rate",
         )
-        
+
         assert len(policy.rates) == 1
         assert policy.name == "single_rate"
         assert policy.key == "ip"
@@ -32,10 +32,10 @@ class TestPolicy:
             key="api_key",
             name="multi_rate",
         )
-        
+
         assert len(policy.rates) == 3
         assert policy.describe() == "Policy(multi_rate): 1000/1h, 100/1m (burst=20), 10/1s (burst=5)"
-        
+
     def test_policy_max_rates(self):
         """Test policy enforces maximum rates."""
         with pytest.raises(ValueError, match="Policy cannot have more than 3 rates"):
@@ -49,7 +49,7 @@ class TestPolicy:
                 key="ip",
                 name="too_many",
             )
-    
+
     def test_policy_key_generation(self):
         """Test Redis key generation."""
         policy = Policy(
@@ -57,13 +57,13 @@ class TestPolicy:
             key="ip",
             name="test",
         )
-        
+
         keys = policy.generate_keys("myapp", "route", "/api/test", "127.0.0.1")
-        
+
         assert len(keys) == 2
         assert keys[0] == "myapp:route:{/api/test}:127.0.0.1:r0:10/1s"
         assert keys[1] == "myapp:route:{/api/test}:127.0.0.1:r1:100/1m"
-        
+
     def test_policy_ttl_calculation(self):
         """Test TTL calculation for policy."""
         policy = Policy(
@@ -75,19 +75,19 @@ class TestPolicy:
             key="ip",
             name="ttl_test",
         )
-        
+
         assert policy.max_ttl_ms == 7200000  # 2 hours in ms
-        
+
     def test_custom_selector(self):
         """Test policy with custom selector function."""
         def custom_selector(request):
             return "custom_id"
-        
+
         policy = Policy(
             rates=[Rate(50, "10s")],
             key=custom_selector,
             name="custom",
         )
-        
+
         assert callable(policy.key)
         assert policy.describe() == "Policy(custom): 50/10s"

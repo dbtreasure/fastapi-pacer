@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class LimiterMiddleware:
     """
     Pure ASGI middleware for global rate limiting.
-    
+
     This implementation avoids BaseHTTPMiddleware overhead by working
     directly with ASGI, providing better performance.
 
@@ -44,7 +44,7 @@ class LimiterMiddleware:
 
         # Convert Rate to Policy if needed for backward compatibility
         if isinstance(policy, Rate):
-            self.policy = Policy(rates=[policy], key="ip", name="middleware")
+            self.policy: Policy | None = Policy(rates=[policy], key="ip", name="middleware")
         else:
             self.policy = policy
 

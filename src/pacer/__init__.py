@@ -6,8 +6,7 @@ from pacer.middleware import LimiterMiddleware
 from pacer.otel import OTelHooks, create_otel_hooks
 from pacer.policies import Policy, Rate
 from pacer.selectors import compose, key_api_key, key_ip, key_org, key_user
-from pacer.storage import RedisStorage  # Backward compatibility
-from pacer.storage_simple import SimpleRedisStorage  # Recommended
+from pacer.storage_simple import SimpleRedisStorage
 
 __version__ = "0.2.0"
 
@@ -32,7 +31,6 @@ __all__ = [
     "compose",
     # Storage backends
     "SimpleRedisStorage",
-    "RedisStorage",  # Backward compatibility
     # Observability
     "OTelHooks",
     "create_otel_hooks",

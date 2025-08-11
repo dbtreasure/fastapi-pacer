@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 
-from pacer import Limiter, Rate, limit
+from pacer import Limiter, Policy, Rate, limit
 from pacer.dependencies import set_limiter
 
 # Get Redis URL from environment
@@ -16,7 +16,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 # Initialize limiter with aggressive settings for benchmarking
 limiter = Limiter(
     redis_url=REDIS_URL,
-    default_policy=Rate(permits=10000, per="1s", burst=1000),  # High limits
+    default_policy=Policy(rates=[Rate(10000, "1s", burst=1000)], key="ip", name="bench"),  # High limits
     fail_mode="open",
     expose_headers=False,  # Disable headers to reduce overhead
     connect_timeout_ms=100,  # Reduce timeout
