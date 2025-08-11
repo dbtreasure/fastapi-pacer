@@ -1,30 +1,33 @@
+"""Core rate limiter implementation."""
+
 import asyncio
 import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from starlette.requests import Request
-from starlette.responses import Response
+from pacer.policies import Policy, Rate
+from pacer.selectors import get_selector
+from pacer.storage_simple import SimpleRedisStorage
 
-from pacer.extractors import Extractor, extract_ip
-from pacer.policies import Rate
-from pacer.storage import RedisStorage
+if TYPE_CHECKING:
+    from starlette.requests import Request
+    from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
 
 # Hook type definitions for observability
-OnDecisionHook = Callable[[Request, str, "RateLimitResult", float], None]
-OnErrorHook = Callable[[Request, Exception, float], None]
+OnDecisionHook = Callable[["Request", Policy, "RateLimitResult", float], None]
+OnErrorHook = Callable[["Request", Policy, Exception, float], None]
 
 
-def _noop_on_decision(request: Request, key: str, result: "RateLimitResult", duration_ms: float) -> None:
+def _noop_on_decision(request: "Request", policy: Policy, result: "RateLimitResult", duration_ms: float) -> None:
     """Default no-op hook for rate limit decisions."""
     pass
 
 
-def _noop_on_error(request: Request, error: Exception, duration_ms: float) -> None:
+def _noop_on_error(request: "Request", policy: Policy, error: Exception, duration_ms: float) -> None:
     """Default no-op hook for errors."""
     pass
 
@@ -36,6 +39,7 @@ class RateLimitResult:
     retry_after_ms: int
     reset_ms: int
     remaining: int
+    matched_rate_index: int = 0
 
     @property
     def retry_after_seconds(self) -> int:
@@ -70,20 +74,17 @@ class LimiterMetrics:
 
 class Limiter:
     """
-    FastAPI rate limiter with GCRA algorithm.
+    FastAPI rate limiter with multi-rate GCRA algorithm.
 
     Args:
         redis_url: Redis connection URL
-        default_policy: Default rate limit policy
-        extractor: Function to extract identity from request
+        default_policy: Default rate limit policy (optional)
         fail_mode: "open" (allow on error) or "closed" (deny on error)
         app_name: Application name for key prefixing
         route_scope: Scope for route keys ("route", "method", "app")
         expose_headers: Whether to expose rate limit headers
-        trust_proxies: List of trusted proxy IPs/CIDRs
         connect_timeout_ms: Redis connection timeout in milliseconds
         command_timeout_ms: Redis command timeout in milliseconds
-        cluster_mode: Whether to use Redis cluster mode
         legacy_timestamp_header: Whether to add X-RateLimit-Reset with Unix timestamp
         expose_policy_header: Whether to add X-RateLimit-Policy header for debugging
         on_decision: Hook called after rate limit decision
@@ -93,16 +94,13 @@ class Limiter:
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379",
-        default_policy: Rate | None = None,
-        extractor: Extractor | None = None,
+        default_policy: Policy | None = None,
         fail_mode: str = "open",
         app_name: str = "fastapi",
         route_scope: str = "route",
         expose_headers: bool = True,
-        trust_proxies: list[str] | None = None,
         connect_timeout_ms: int = 1000,
         command_timeout_ms: int = 100,
-        cluster_mode: bool = False,
         legacy_timestamp_header: bool = False,
         expose_policy_header: bool = False,
         on_decision: OnDecisionHook | None = None,
@@ -114,8 +112,7 @@ class Limiter:
         if route_scope not in ("route", "method", "app"):
             raise ValueError("route_scope must be 'route', 'method', or 'app'")
 
-        self.default_policy = default_policy or Rate(permits=10, per="1s", burst=10)
-        self.extractor = extractor or extract_ip(trusted_proxies=trust_proxies)
+        self.default_policy = default_policy
         self.fail_mode = fail_mode
         self.app_name = app_name
         self.route_scope = route_scope
@@ -128,11 +125,10 @@ class Limiter:
         self.on_error = on_error or _noop_on_error
 
         # Initialize storage
-        self.storage = RedisStorage(
+        self.storage = SimpleRedisStorage(
             redis_url=redis_url,
             connect_timeout_ms=connect_timeout_ms,
             command_timeout_ms=command_timeout_ms,
-            cluster_mode=cluster_mode,
         )
 
         # Metrics
@@ -163,14 +159,14 @@ class Limiter:
                 self._connected = False
                 logger.info("Rate limiter shut down")
 
-    async def check_rate_limit(
+    async def check_policy(
         self,
-        request: Request,
-        policy: Rate | None = None,
+        request: "Request",
+        policy: Policy | None = None,
         scope_override: str | None = None,
     ) -> RateLimitResult:
         """
-        Check if a request is within rate limits.
+        Check if a request is within rate limits using a policy.
 
         Args:
             request: The incoming request
@@ -185,27 +181,31 @@ class Limiter:
             await self.startup()
 
         # Use provided policy or default
-        policy = policy or self.default_policy
+        if policy is None:
+            if self.default_policy is None:
+                raise ValueError("No policy provided and no default policy configured")
+            policy = self.default_policy
+
+        # Get selector function for extracting identity
+        selector = get_selector(policy.key)
 
         # Extract principal (identity)
-        principal = self.extractor(request)
+        principal = selector(request)
 
         # Generate scope key
         scope = scope_override or self._get_scope(request)
 
-        # Generate Redis key
-        key = policy.key_for(self.app_name, self.route_scope, scope, principal)
+        # Generate Redis keys for all rates in the policy
+        keys = policy.generate_keys(self.app_name, self.route_scope, scope, principal)
 
         # Track timing for observability
         start_time = time.time()
 
         try:
-            # Check rate limit
-            allowed, retry_after_ms, reset_ms, remaining = await self.storage.check_rate_limit(
-                key=key,
-                emission_interval_ms=policy.emission_interval_ms,
-                burst_capacity_ms=policy.burst_capacity_ms,
-                ttl_ms=policy.ttl_ms,
+            # Check policy with all rates
+            allowed, retry_after_ms, reset_ms, remaining, matched_rate_index = await self.storage.check_policy(
+                keys=keys,
+                policy=policy,
             )
 
             # Calculate duration
@@ -216,18 +216,19 @@ class Limiter:
                 self.metrics.requests_allowed += 1
             else:
                 self.metrics.requests_blocked += 1
-                logger.info(f"Rate limit exceeded for {principal} on {scope}")
+                logger.info(f"Rate limit exceeded for {principal} on {scope} (policy: {policy.name})")
 
             result = RateLimitResult(
                 allowed=allowed,
                 retry_after_ms=retry_after_ms,
                 reset_ms=reset_ms,
                 remaining=remaining,
+                matched_rate_index=matched_rate_index,
             )
 
             # Call decision hook for observability
             try:
-                self.on_decision(request, key, result, duration_ms)
+                self.on_decision(request, policy, result, duration_ms)
             except Exception as hook_error:
                 logger.warning(f"Decision hook failed: {hook_error}")
 
@@ -243,18 +244,21 @@ class Limiter:
 
             # Call error hook for observability
             try:
-                self.on_error(request, e, duration_ms)
+                self.on_error(request, policy, e, duration_ms)
             except Exception as hook_error:
                 logger.warning(f"Error hook failed: {hook_error}")
 
             # Apply fail mode
             if self.fail_mode == "open":
                 # Allow request on error
+                # Use the most permissive rate for remaining
+                max_permits = max(rate.permits for rate in policy.rates)
                 return RateLimitResult(
                     allowed=True,
                     retry_after_ms=0,
                     reset_ms=0,
-                    remaining=policy.permits,
+                    remaining=max_permits,
+                    matched_rate_index=0,
                 )
             else:
                 # Deny request on error
@@ -263,9 +267,10 @@ class Limiter:
                     retry_after_ms=1000,  # Default 1 second
                     reset_ms=1000,
                     remaining=0,
+                    matched_rate_index=0,
                 )
 
-    def _get_scope(self, request: Request) -> str:
+    def _get_scope(self, request: "Request") -> str:
         """Generate scope identifier from request."""
         if self.route_scope == "app":
             return "global"
@@ -276,9 +281,9 @@ class Limiter:
 
     def add_headers(
         self,
-        response: Response,
+        response: "Response",
         result: RateLimitResult,
-        policy: Rate | None = None,
+        policy: Policy | None = None,
     ) -> None:
         """
         Add rate limit headers to response.
@@ -286,15 +291,21 @@ class Limiter:
         Args:
             response: Response object to add headers to
             result: Rate limit check result
-            policy: Rate policy used (for limit header)
+            policy: Policy used (for limit header)
         """
         if not self.expose_headers:
             return
 
-        policy = policy or self.default_policy
+        if policy is None:
+            if self.default_policy is None:
+                return
+            policy = self.default_policy
 
-        # Add standard headers
-        response.headers["RateLimit-Limit"] = str(policy.permits)
+        # Get the matched rate for headers
+        matched_rate = policy.rates[result.matched_rate_index]
+
+        # Add standard headers using the matched rate
+        response.headers["RateLimit-Limit"] = str(matched_rate.permits)
         response.headers["RateLimit-Remaining"] = str(max(0, result.remaining))
 
         # RateLimit-Reset: Use delta-seconds (spec compliant)
@@ -306,10 +317,7 @@ class Limiter:
 
         # Optional: Add X-RateLimit-Policy header for debugging
         if self.expose_policy_header:
-            policy_str = f"{policy.permits};w={policy.per}"
-            if policy.burst > 0:
-                policy_str += f";burst={policy.burst}"
-            response.headers["X-RateLimit-Policy"] = policy_str
+            response.headers["X-RateLimit-Policy"] = policy.describe()
 
         # Add Retry-After header if rate limited
         if not result.allowed:
@@ -319,7 +327,14 @@ class Limiter:
         """Check if limiter is healthy."""
         if not self._connected:
             return False
-        return await self.storage.is_healthy()
+        try:
+            # Try a simple ping
+            if self.storage.redis:
+                await self.storage.redis.ping()
+                return True
+            return False
+        except Exception:
+            return False
 
     def get_metrics(self) -> dict[str, Any]:
         """Get limiter metrics."""
@@ -327,3 +342,30 @@ class Limiter:
             "limiter": self.metrics.to_dict(),
             "connected": self._connected,
         }
+
+    # Backward compatibility: check_rate_limit wraps check_policy
+    async def check_rate_limit(
+        self,
+        request: "Request",
+        policy: Rate | Policy | None = None,
+        scope_override: str | None = None,
+    ) -> RateLimitResult:
+        """
+        Check if a request is within rate limits.
+        
+        This method maintains backward compatibility with Rate objects
+        while supporting the new Policy API.
+
+        Args:
+            request: The incoming request
+            policy: Rate limit policy (Rate or Policy object)
+            scope_override: Override the scope for this check
+
+        Returns:
+            RateLimitResult with decision and metadata
+        """
+        # Convert Rate to Policy if needed
+        if isinstance(policy, Rate):
+            policy = Policy(rates=[policy], key="ip", name="legacy")
+
+        return await self.check_policy(request, policy, scope_override)

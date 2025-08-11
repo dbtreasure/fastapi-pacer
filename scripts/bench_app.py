@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 
-from pacer import Limiter, LimiterMiddleware, Rate, limit
+from pacer import Limiter, Rate, limit
 from pacer.dependencies import set_limiter
 
 # Get Redis URL from environment

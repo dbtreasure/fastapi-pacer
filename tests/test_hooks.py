@@ -4,7 +4,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from pacer import Limiter, LimiterMiddleware, Rate, limit
+from pacer import Limiter, LimiterMiddleware, Policy, Rate, limit
 
 
 class TestObservabilityHooks:
@@ -15,9 +15,9 @@ class TestObservabilityHooks:
         """Test on_decision hook is called with correct data via dependency injection."""
         hook_calls = []
 
-        def capture_decision(request, key, result, duration_ms):
+        def capture_decision(request, policy, result, duration_ms):
             hook_calls.append({
-                "key": key,
+                "policy": policy.name if policy else None,
                 "allowed": result.allowed,
                 "duration_ms": duration_ms,
                 "path": request.url.path,
@@ -39,7 +39,7 @@ class TestObservabilityHooks:
                 await limiter.storage.redis.flushdb()
             await limiter.shutdown()
 
-        @app.get("/test", dependencies=[Depends(limit(Rate(10, "1m"), limiter=limiter))])
+        @app.get("/test", dependencies=[Depends(limit(Policy(rates=[Rate(10, "1m")], key="ip", name="test"), limiter=limiter))])
         async def test_endpoint():
             return {"status": "ok"}
 
@@ -53,17 +53,16 @@ class TestObservabilityHooks:
             assert call["allowed"] is True
             assert call["duration_ms"] > 0
             assert "/test" in call["path"]
-            assert "fastapi:route:" in call["key"]
-            assert "127.0.0.1" in call["key"]  # IP address should be in key
+            assert call["policy"] in ["test", "middleware"]  # Policy name should match
 
     @pytest.mark.asyncio
     async def test_on_decision_hook_called_with_middleware(self):
         """Test on_decision hook is called with correct data via middleware."""
         hook_calls = []
 
-        def capture_decision(request, key, result, duration_ms):
+        def capture_decision(request, policy, result, duration_ms):
             hook_calls.append({
-                "key": key,
+                "policy": policy.name if policy else None,
                 "allowed": result.allowed,
                 "duration_ms": duration_ms,
                 "path": request.url.path,
@@ -78,7 +77,7 @@ class TestObservabilityHooks:
         app.add_middleware(
             LimiterMiddleware,
             limiter=limiter,
-            policy=Rate(permits=10, per="1m"),
+            policy=Policy(rates=[Rate(permits=10, per="1m")], key="ip", name="middleware"),
         )
 
         @app.on_event("startup")
@@ -105,15 +104,14 @@ class TestObservabilityHooks:
             assert call["allowed"] is True
             assert call["duration_ms"] > 0
             assert "/test" in call["path"]
-            assert "fastapi:route:" in call["key"]
-            assert "127.0.0.1" in call["key"]  # IP address should be in key
+            assert call["policy"] in ["test", "middleware"]  # Policy name should match
 
     @pytest.mark.asyncio
     async def test_on_decision_hook_called_on_rate_limit(self):
         """Test on_decision hook is called when request is rate limited."""
         hook_calls = []
 
-        def capture_decision(request, key, result, duration_ms):
+        def capture_decision(request, policy, result, duration_ms):
             hook_calls.append({
                 "allowed": result.allowed,
                 "retry_after_ms": result.retry_after_ms,
@@ -136,7 +134,7 @@ class TestObservabilityHooks:
             await limiter.shutdown()
 
         # Very low limit to trigger rate limiting
-        @app.get("/test", dependencies=[Depends(limit(Rate(1, "60s", burst=0), limiter=limiter))])
+        @app.get("/test", dependencies=[Depends(limit(Policy(rates=[Rate(1, "60s", burst=0)], key="ip", name="test"), limiter=limiter))])
         async def test_endpoint():
             return {"status": "ok"}
 
@@ -158,7 +156,7 @@ class TestObservabilityHooks:
         """Test on_error hook is called on Redis errors."""
         error_calls = []
 
-        def capture_error(request, error, duration_ms):
+        def capture_error(request, policy, error, duration_ms):
             error_calls.append({
                 "error_type": type(error).__name__,
                 "duration_ms": duration_ms,
@@ -173,7 +171,7 @@ class TestObservabilityHooks:
             connect_timeout_ms=100,  # Short timeout to fail fast
         )
 
-        @app.get("/test", dependencies=[Depends(limit(Rate(10, "1m"), limiter=limiter))])
+        @app.get("/test", dependencies=[Depends(limit(Policy(rates=[Rate(10, "1m")], key="ip", name="test"), limiter=limiter))])
         async def test_endpoint():
             return {"status": "ok"}
 

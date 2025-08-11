@@ -1,20 +1,21 @@
-"""Simple Redis storage backend without cluster support."""
+"""Simple Redis storage backend for multi-rate policies."""
 
-import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import Any
 
 import redis.asyncio as redis
-from redis.exceptions import ConnectionError, NoScriptError, RedisError, ResponseError, TimeoutError
+from redis.exceptions import ConnectionError, NoScriptError, ResponseError, TimeoutError
+
+from pacer.policies import Policy
 
 logger = logging.getLogger(__name__)
 
 
 class SimpleRedisStorage:
-    """Simple Redis storage backend for rate limiting with GCRA.
-
+    """
+    Simple Redis storage backend for rate limiting with multi-rate GCRA.
+    
     This is the recommended storage backend for most applications.
     For Redis Cluster support, use RedisClusterStorage instead.
     """
@@ -44,150 +45,125 @@ class SimpleRedisStorage:
                 socket_connect_timeout=self.connect_timeout,
                 socket_timeout=self.command_timeout,
                 decode_responses=False,
-                max_connections=50,  # Increase connection pool size
+                max_connections=50,
                 health_check_interval=0,  # Disable health checks for performance
             )
 
             # Test connection
             await self._client.ping()
+
+            # Load Lua script
+            script_path = Path(__file__).parent / "lua" / "gcra_multi.lua"
+            with open(script_path) as f:
+                self._script_content = f.read()
+
+            # Register script and get SHA
+            self._script_sha = await self._client.script_load(self._script_content)
+
             self._connected = True
-
-            # Load GCRA script
-            await self._load_script()
-
-            logger.info("Connected to Redis successfully")
+            logger.info("Connected to Redis and loaded multi-rate GCRA script")
 
         except (ConnectionError, TimeoutError) as e:
             logger.error(f"Failed to connect to Redis: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error during Redis connection: {e}")
             raise
 
     async def disconnect(self) -> None:
         """Close Redis connection."""
         if self._client:
             await self._client.aclose()
+            self._client = None
             self._connected = False
             logger.info("Disconnected from Redis")
 
-    async def _load_script(self) -> None:
-        """Load GCRA Lua script into Redis."""
-        if not self._client:
-            raise RuntimeError("Redis client not connected")
-
-        # Load script from file
-        script_path = Path(__file__).parent / "lua" / "gcra.lua"
-        with open(script_path) as f:
-            self._script_content = f.read()
-
-        # Load script and get SHA
-        self._script_sha = await self._client.script_load(self._script_content)
-        logger.debug(f"Loaded GCRA script with SHA: {self._script_sha}")
-
-    async def check_rate_limit(
+    async def check_policy(
         self,
-        key: str,
-        emission_interval_ms: int,
-        burst_capacity_ms: int,
-        ttl_ms: int,
-    ) -> tuple[bool, int, int, int]:
+        keys: list[str],
+        policy: Policy,
+        now_ms: int | None = None,
+    ) -> tuple[bool, int, int, int, int]:
         """
-        Check rate limit using GCRA algorithm.
-
+        Check if request is allowed under the policy.
+        
         Args:
-            key: Redis key for the rate limit
-            emission_interval_ms: Time between permitted requests
-            burst_capacity_ms: Burst capacity in milliseconds
-            ttl_ms: TTL for the Redis key
-
+            keys: Redis keys for each rate in the policy
+            policy: The policy to check against
+            now_ms: Current time in milliseconds (for testing)
+        
         Returns:
-            Tuple of (allowed, retry_after_ms, reset_ms, remaining)
+            Tuple of (allowed, retry_after_ms, reset_ms, remaining, matched_rate_index)
         """
-        if not self._connected or not self._client:
-            raise RuntimeError("Redis storage not connected")
+        if not self._connected:
+            raise RuntimeError("Storage not connected. Call connect() first.")
 
-        now_ms = int(time.time() * 1000)
+        if now_ms is None:
+            now_ms = int(time.time() * 1000)
 
-        for attempt in range(self.max_retries + 1):
-            try:
-                # Try EVALSHA first, fall back to EVAL if script not loaded
-                try:
-                    result = await self._execute_script_sha(
-                        key, emission_interval_ms, burst_capacity_ms, now_ms, ttl_ms
-                    )
-                except NoScriptError:
-                    logger.debug("Script not in cache, reloading")
-                    await self._load_script()
-                    result = await self._execute_script_sha(
-                        key, emission_interval_ms, burst_capacity_ms, now_ms, ttl_ms
-                    )
+        # Build arguments for Lua script
+        args = [
+            str(now_ms),
+            str(policy.max_ttl_ms),
+            str(len(policy.rates)),
+        ]
 
-                # Parse result
+        # Add emission interval and burst capacity for each rate
+        for rate in policy.rates:
+            args.extend([
+                str(rate.emission_interval_ms),
+                str(rate.burst_capacity_ms),
+            ])
+
+        # Pad with empty args if less than 3 rates
+        while len(args) < 9:  # 3 base + 2*3 rate args
+            args.append("0")
+
+        # Pad keys to always have 3
+        padded_keys = keys + [""] * (3 - len(keys))
+
+        try:
+            # Execute script with EVALSHA
+            if not self._client or not self._script_sha:
+                raise RuntimeError("Storage not properly initialized")
+                
+            result = await self._client.evalsha(
+                self._script_sha,
+                3,  # Always pass 3 keys (some may be empty)
+                *padded_keys[:3],  # Always pass 3 key slots
+                *args,
+            )
+
+            # Parse result
+            if result and len(result) >= 5:
                 allowed = bool(result[0])
                 retry_after_ms = int(result[1])
                 reset_ms = int(result[2])
                 remaining = int(result[3])
+                matched_rate_index = int(result[4]) - 1  # Convert to 0-based
 
-                return allowed, retry_after_ms, reset_ms, remaining
+                return allowed, retry_after_ms, reset_ms, remaining, matched_rate_index
+            else:
+                raise ValueError(f"Invalid result from Lua script: {result}")
 
-            except (ConnectionError, TimeoutError) as e:
-                if attempt < self.max_retries:
-                    logger.warning(f"Redis operation failed (attempt {attempt + 1}), retrying: {e}")
-                    await asyncio.sleep(0.01 * (2 ** attempt))  # Exponential backoff
-                else:
-                    logger.error(f"Redis operation failed after {self.max_retries + 1} attempts")
-                    raise
-            except ResponseError as e:
-                logger.error(f"Redis script error: {e}")
-                raise
+        except NoScriptError:
+            # Script not in cache, reload it
+            logger.warning("Lua script not in cache, reloading...")
+            if self._script_content and self._client:
+                self._script_sha = await self._client.script_load(self._script_content)
+                # Retry the command
+                return await self.check_policy(keys, policy, now_ms)
+            else:
+                raise RuntimeError("Lua script not loaded") from None
 
-        # This should never be reached due to the raises above, but satisfies type checker
-        raise RuntimeError("Unexpected error in rate limit check")
+        except (ConnectionError, TimeoutError, ResponseError) as e:
+            logger.error(f"Redis error during rate limit check: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error during rate limit check: {e}")
+            raise
 
-    async def _execute_script_sha(
-        self,
-        key: str,
-        emission_interval_ms: int,
-        burst_capacity_ms: int,
-        now_ms: int,
-        ttl_ms: int,
-    ) -> list[Any]:
-        """Execute GCRA script using EVALSHA."""
-        if not self._client or not self._script_sha:
-            raise RuntimeError("Script not loaded")
-
-        result = await self._client.evalsha(  # type: ignore[misc]
-            self._script_sha,
-            1,  # number of keys
-            key,  # KEYS[1]
-            str(emission_interval_ms),  # ARGV[1]
-            str(burst_capacity_ms),  # ARGV[2]
-            str(now_ms),  # ARGV[3]
-            str(ttl_ms),  # ARGV[4]
-        )
-        return result  # type: ignore[no-any-return]
-
-    async def is_healthy(self) -> bool:
-        """Check if Redis connection is healthy."""
-        if not self._connected or not self._client:
-            return False
-
-        try:
-            await asyncio.wait_for(self._client.ping(), timeout=0.1)
-            return True
-        except (RedisError, asyncio.TimeoutError):
-            return False
-
-    async def get_stats(self) -> dict[str, Any]:
-        """Get storage statistics."""
-        if not self._client:
-            return {"connected": False}
-
-        try:
-            info = await self._client.info("stats")
-            return {
-                "connected": self._connected,
-                "total_connections_received": info.get("total_connections_received", 0),
-                "total_commands_processed": info.get("total_commands_processed", 0),
-                "instantaneous_ops_per_sec": info.get("instantaneous_ops_per_sec", 0),
-            }
-        except RedisError:
-            return {"connected": False}
+    @property
+    def redis(self) -> redis.Redis | None:
+        """Get the Redis client (for testing/admin purposes)."""
+        return self._client

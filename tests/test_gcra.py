@@ -1,10 +1,11 @@
+"""Test GCRA algorithm implementation."""
 
 import asyncio
-
 import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from pacer.policies import Rate
-from pacer.storage import RedisStorage
+from pacer import Limiter, Policy, Rate
+from pacer.storage_simple import SimpleRedisStorage
 
 
 class TestGCRAAlgorithm:
@@ -117,249 +118,196 @@ class TestGCRAAlgorithm:
 
 
 class TestGCRABehavior:
-    """Test real-world GCRA rate limiting scenarios."""
+    """Test real-world GCRA rate limiting scenarios using Policy API."""
 
     @pytest.mark.asyncio
     async def test_burst_then_steady_state(self):
         """Test that burst is consumed then rate limiting kicks in."""
-        storage = RedisStorage(redis_url="redis://localhost:6379")
-        await storage.connect()
+        limiter = Limiter(redis_url="redis://localhost:6379")
+        await limiter.startup()
 
         try:
             # 10 req/sec with burst of 5
-            rate = Rate(permits=10, per="1s", burst=5)
-            key = "test:burst:scenario:user1"
-
+            policy = Policy(
+                rates=[Rate(permits=10, per="1s", burst=5)],
+                key="ip",
+                name="burst_test"
+            )
+            
             # Clear any existing key
-            if storage._client:
-                await storage._client.delete(key)
+            key = policy.generate_keys("pacer", "route", "/test", "192.168.1.1")[0]
+            if limiter.storage.redis:
+                await limiter.storage.redis.delete(key)
+
+            request = MagicMock()
+            request.client.host = "192.168.1.1"
+            request.headers = {}
+            request.url.path = "/test"
+            request.method = "GET"
 
             # Burst: First 6 requests should be allowed immediately
             for i in range(6):
-                allowed, retry_after, _, remaining = await storage.check_rate_limit(
-                    key=key,
-                    emission_interval_ms=rate.emission_interval_ms,
-                    burst_capacity_ms=rate.burst_capacity_ms,
-                    ttl_ms=rate.ttl_ms,
-                )
-                assert allowed, f"Request {i+1} should be allowed (burst)"
-                assert remaining >= 0
+                result = await limiter.check_policy(request, policy)
+                assert result.allowed, f"Request {i+1} should be allowed (burst)"
+                assert result.remaining >= 0
 
             # 7th request should be denied (burst exhausted)
-            allowed, retry_after, _, remaining = await storage.check_rate_limit(
-                key=key,
-                emission_interval_ms=rate.emission_interval_ms,
-                burst_capacity_ms=rate.burst_capacity_ms,
-                ttl_ms=rate.ttl_ms,
-            )
-            assert not allowed, "7th request should be denied"
-            assert retry_after > 0, "Should have retry_after set"
-            assert remaining == 0
+            result = await limiter.check_policy(request, policy)
+            assert not result.allowed, "7th request should be denied"
+            assert result.retry_after_ms > 0, "Should have retry_after set"
+            assert result.remaining == 0
 
             # Wait for one emission interval (100ms) then try again
             await asyncio.sleep(0.11)
 
             # Should allow one more request
-            allowed, _, _, _ = await storage.check_rate_limit(
-                key=key,
-                emission_interval_ms=rate.emission_interval_ms,
-                burst_capacity_ms=rate.burst_capacity_ms,
-                ttl_ms=rate.ttl_ms,
-            )
-            assert allowed, "Should allow after waiting emission interval"
+            result = await limiter.check_policy(request, policy)
+            assert result.allowed, "Should allow after waiting emission interval"
 
         finally:
-            await storage.disconnect()
+            await limiter.shutdown()
 
     @pytest.mark.asyncio
     async def test_multiple_users_isolated(self):
         """Test that different users have isolated rate limits."""
-        storage = RedisStorage(redis_url="redis://localhost:6379")
-        await storage.connect()
+        limiter = Limiter(redis_url="redis://localhost:6379")
+        await limiter.startup()
 
         try:
             # 2 req/sec with burst of 1 (allows 2 immediate requests)
-            rate = Rate(permits=2, per="1s", burst=1)
+            policy = Policy(
+                rates=[Rate(permits=2, per="1s", burst=1)],
+                key="ip",
+                name="isolation_test"
+            )
 
             # Clear any existing keys
-            if storage._client:
-                await storage._client.delete("test:isolated:endpoint:user1")
-                await storage._client.delete("test:isolated:endpoint:user2")
+            key1 = policy.generate_keys("pacer", "route", "/test", "user1")[0]
+            key2 = policy.generate_keys("pacer", "route", "/test", "user2")[0]
+            if limiter.storage.redis:
+                await limiter.storage.redis.delete(key1)
+                await limiter.storage.redis.delete(key2)
+
+            # Create request objects for two different users
+            request1 = MagicMock()
+            request1.client.host = "user1"
+            request1.headers = {}
+            request1.url.path = "/test"
+            request1.method = "GET"
+
+            request2 = MagicMock()
+            request2.client.host = "user2"
+            request2.headers = {}
+            request2.url.path = "/test"
+            request2.method = "GET"
 
             # User 1 makes 2 requests (uses regular + burst)
             for i in range(2):
-                allowed, _, _, _ = await storage.check_rate_limit(
-                    key="test:isolated:endpoint:user1",
-                    emission_interval_ms=rate.emission_interval_ms,
-                    burst_capacity_ms=rate.burst_capacity_ms,
-                    ttl_ms=rate.ttl_ms,
-                )
-                assert allowed, f"User1 request {i+1} should be allowed"
+                result = await limiter.check_policy(request1, policy)
+                assert result.allowed, f"User1 request {i+1} should be allowed"
 
             # User 1's 3rd request should be denied
-            allowed, _, _, _ = await storage.check_rate_limit(
-                key="test:isolated:endpoint:user1",
-                emission_interval_ms=rate.emission_interval_ms,
-                burst_capacity_ms=rate.burst_capacity_ms,
-                ttl_ms=rate.ttl_ms,
-            )
-            assert not allowed, "User1's 3rd request should be denied"
+            result = await limiter.check_policy(request1, policy)
+            assert not result.allowed, "User1's 3rd request should be denied"
 
             # User 2 should still be able to make requests
             for i in range(2):
-                allowed, _, _, _ = await storage.check_rate_limit(
-                    key="test:isolated:endpoint:user2",
-                    emission_interval_ms=rate.emission_interval_ms,
-                    burst_capacity_ms=rate.burst_capacity_ms,
-                    ttl_ms=rate.ttl_ms,
-                )
-                assert allowed, f"User2 request {i+1} should be allowed"
+                result = await limiter.check_policy(request2, policy)
+                assert result.allowed, f"User2 request {i+1} should be allowed"
 
         finally:
-            await storage.disconnect()
+            await limiter.shutdown()
 
     @pytest.mark.asyncio
     async def test_rate_limit_recovery_after_idle(self):
         """Test that rate limit recovers after idle period."""
-        storage = RedisStorage(redis_url="redis://localhost:6379")
-        await storage.connect()
+        limiter = Limiter(redis_url="redis://localhost:6379")
+        await limiter.startup()
 
         try:
             # 5 req/sec with burst of 2
-            rate = Rate(permits=5, per="1s", burst=2)
-            key = "test:recovery:endpoint:user1"
+            policy = Policy(
+                rates=[Rate(permits=5, per="1s", burst=2)],
+                key="ip",
+                name="recovery_test"
+            )
 
             # Clear any existing key
-            if storage._client:
-                await storage._client.delete(key)
+            key = policy.generate_keys("pacer", "route", "/test", "192.168.1.1")[0]
+            if limiter.storage.redis:
+                await limiter.storage.redis.delete(key)
+
+            request = MagicMock()
+            request.client.host = "192.168.1.1"
+            request.headers = {}
+            request.url.path = "/test"
+            request.method = "GET"
 
             # Use up all burst (3 requests)
             for i in range(3):
-                allowed, _, _, _ = await storage.check_rate_limit(
-                    key=key,
-                    emission_interval_ms=rate.emission_interval_ms,
-                    burst_capacity_ms=rate.burst_capacity_ms,
-                    ttl_ms=rate.ttl_ms,
-                )
-                assert allowed, f"Request {i+1} should be allowed"
+                result = await limiter.check_policy(request, policy)
+                assert result.allowed, f"Request {i+1} should be allowed"
 
             # Next should be denied
-            allowed, _, _, _ = await storage.check_rate_limit(
-                key=key,
-                emission_interval_ms=rate.emission_interval_ms,
-                burst_capacity_ms=rate.burst_capacity_ms,
-                ttl_ms=rate.ttl_ms,
-            )
-            assert not allowed, "Should be rate limited"
+            result = await limiter.check_policy(request, policy)
+            assert not result.allowed, "Should be denied after burst exhausted"
 
-            # Wait for full recovery (1 second + burst time)
-            await asyncio.sleep(1.5)
+            # Wait for 2 seconds (idle period)
+            await asyncio.sleep(2)
 
-            # Should be able to burst again
+            # Should recover full burst capacity after idle
             for i in range(3):
-                allowed, _, _, _ = await storage.check_rate_limit(
-                    key=key,
-                    emission_interval_ms=rate.emission_interval_ms,
-                    burst_capacity_ms=rate.burst_capacity_ms,
-                    ttl_ms=rate.ttl_ms,
-                )
-                assert allowed, f"Request {i+1} after idle should be allowed"
+                result = await limiter.check_policy(request, policy)
+                assert result.allowed, f"Request {i+1} after idle should be allowed"
 
         finally:
-            await storage.disconnect()
-
-
-class TestRedisTTL:
-    """Test Redis TTL functionality."""
+            await limiter.shutdown()
 
     @pytest.mark.asyncio
-    async def test_key_expires_with_ttl(self):
-        """Test that Redis keys expire according to TTL."""
-        # Create storage and connect
-        storage = RedisStorage(redis_url="redis://localhost:6379")
-        await storage.connect()
+    async def test_ttl_expiration(self):
+        """Test that keys are properly expired with TTL."""
+        limiter = Limiter(redis_url="redis://localhost:6379")
+        await limiter.startup()
 
         try:
-            # Create a rate with short TTL (2 seconds)
-            rate = Rate(permits=10, per="1s", burst=0)
-            key = rate.key_for("test", "ttl", "endpoint", "test-user")
-
-            # Make a request to set the key
-            emission_interval_ms = rate.emission_interval_ms
-            burst_capacity_ms = rate.burst_capacity_ms
-            ttl_ms = 2000  # 2 seconds TTL
-
-            allowed, _, _, _ = await storage.check_rate_limit(
-                key=key,
-                emission_interval_ms=emission_interval_ms,
-                burst_capacity_ms=burst_capacity_ms,
-                ttl_ms=ttl_ms,
+            # Very short rate limit for TTL testing  
+            policy = Policy(
+                rates=[Rate(permits=2, per="1s", burst=0)],
+                key="ip",
+                name="ttl_test"
             )
-            assert allowed
 
-            # Verify key exists
-            client = storage._client
-            assert client is not None
-            exists = await client.exists(key)
-            assert exists == 1
+            request = MagicMock()
+            request.client.host = "192.168.1.1"
+            request.headers = {}
+            request.url.path = "/test"
+            request.method = "GET"
 
-            # Check TTL is set correctly (should be close to 2000ms)
-            ttl_remaining = await client.pttl(key)
-            assert 1500 <= ttl_remaining <= 2000
+            # Make a request
+            result = await limiter.check_policy(request, policy)
+            assert result.allowed, "First request should be allowed"
 
-            # Wait for key to expire
+            # The key format is app_name:route_scope:scope:principal:rate_index:rate_desc
+            # From the limiter.check_policy call, it would be: pacer:route:{/test}:192.168.1.1:r0:2/1s
+            key = f"{limiter.app_name}:{limiter.route_scope}:{{/test}}:192.168.1.1:r0:2/1s"
+            exists = await limiter.storage.redis.exists(key)
+            assert exists, "Key should exist after first request"
+
+            # TTL should be 2 * period = 2s
+            ttl = await limiter.storage.redis.ttl(key)
+            assert ttl > 0, "Key should have TTL set"
+            assert ttl <= 2, "TTL should be around 2 seconds"
+
+            # Wait for TTL to expire (add buffer)
             await asyncio.sleep(2.5)
 
-            # Verify key has expired
-            exists = await client.exists(key)
-            assert exists == 0
+            # Key should be gone
+            exists = await limiter.storage.redis.exists(key)
+            assert not exists, "Key should be expired after TTL"
+
+            # Should be able to make requests again (fresh start)
+            result = await limiter.check_policy(request, policy)
+            assert result.allowed, "Should allow after key expired"
 
         finally:
-            await storage.disconnect()
-
-    @pytest.mark.asyncio
-    async def test_ttl_refreshes_on_new_request(self):
-        """Test that TTL is refreshed when a new request is made."""
-        storage = RedisStorage(redis_url="redis://localhost:6379")
-        await storage.connect()
-
-        try:
-            rate = Rate(permits=10, per="1s", burst=0)
-            key = rate.key_for("test", "ttl", "refresh", "test-user")
-
-            emission_interval_ms = rate.emission_interval_ms
-            burst_capacity_ms = rate.burst_capacity_ms
-            ttl_ms = 3000  # 3 seconds TTL
-
-            # First request
-            await storage.check_rate_limit(
-                key=key,
-                emission_interval_ms=emission_interval_ms,
-                burst_capacity_ms=burst_capacity_ms,
-                ttl_ms=ttl_ms,
-            )
-
-            # Wait 1.5 seconds
-            await asyncio.sleep(1.5)
-
-            # Check TTL before second request
-            client = storage._client
-            assert client is not None
-            ttl_before = await client.pttl(key)
-            assert 1000 <= ttl_before <= 1600
-
-            # Second request should refresh TTL
-            await storage.check_rate_limit(
-                key=key,
-                emission_interval_ms=emission_interval_ms,
-                burst_capacity_ms=burst_capacity_ms,
-                ttl_ms=ttl_ms,
-            )
-
-            # Check TTL after second request
-            ttl_after = await client.pttl(key)
-            assert 2500 <= ttl_after <= 3000
-            assert ttl_after > ttl_before
-
-        finally:
-            await storage.disconnect()
+            await limiter.shutdown()

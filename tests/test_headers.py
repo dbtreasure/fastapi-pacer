@@ -4,7 +4,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from pacer import Limiter, Rate, limit
+from pacer import Limiter, Policy, Rate, limit
 from pacer.dependencies import get_limiter
 
 
@@ -39,15 +39,15 @@ async def app_with_policy_header():
 
     app.dependency_overrides[get_limiter] = get_test_limiter
 
-    @app.get("/", dependencies=[Depends(limit(Rate(100, "1m", burst=10), limiter=limiter))])
+    @app.get("/", dependencies=[Depends(limit(Policy(rates=[Rate(100, "1m", burst=10)], key="ip", name="root"), limiter=limiter))])
     async def root():
         return {"message": "ok"}
 
-    @app.get("/noburst", dependencies=[Depends(limit(Rate(50, "10s", burst=0), limiter=limiter))])
+    @app.get("/noburst", dependencies=[Depends(limit(Policy(rates=[Rate(50, "10s", burst=0)], key="ip", name="noburst"), limiter=limiter))])
     async def noburst():
         return {"message": "ok"}
 
-    @app.get("/strict", dependencies=[Depends(limit(Rate(1, "60s", burst=0), limiter=limiter))])
+    @app.get("/strict", dependencies=[Depends(limit(Policy(rates=[Rate(1, "60s", burst=0)], key="ip", name="strict"), limiter=limiter))])
     async def strict():
         return {"message": "ok"}
 
@@ -121,7 +121,7 @@ async def app_with_legacy_header():
 
     app.dependency_overrides[get_limiter] = get_test_limiter
 
-    @app.get("/", dependencies=[Depends(limit(Rate(100, "1m"), limiter=limiter))])
+    @app.get("/", dependencies=[Depends(limit(Policy(rates=[Rate(100, "1m")], key="ip", name="root"), limiter=limiter))])
     async def root():
         return {"message": "ok"}
 
@@ -151,8 +151,12 @@ class TestRateLimitHeaders:
     async def test_legacy_timestamp_header(self, app_with_legacy_header):
         """Test optional Unix timestamp header."""
         async with AsyncClient(transport=ASGITransport(app=app_with_legacy_header), base_url="http://test") as client:
-            # Use a unique header to avoid rate limit conflict
-            response = await client.get("/", headers={"X-Test-ID": "legacy-test"})
+            # Clear Redis before testing to avoid conflicts
+            limiter = app_with_legacy_header.state.limiter
+            if limiter.storage.redis:
+                await limiter.storage.redis.flushdb()
+            
+            response = await client.get("/")
 
             assert response.status_code == 200
             assert "X-RateLimit-Reset" in response.headers
@@ -189,7 +193,7 @@ class TestRateLimitHeaders:
 
             assert response.status_code == 200
             assert "X-RateLimit-Policy" in response.headers
-            assert response.headers["X-RateLimit-Policy"] == "100;w=1m;burst=10"
+            assert response.headers["X-RateLimit-Policy"] == "Policy(root): 100/1m (burst=10)"
 
     @pytest.mark.asyncio
     async def test_policy_header_without_burst(self, app_with_policy_header):
@@ -199,7 +203,7 @@ class TestRateLimitHeaders:
 
             assert response.status_code == 200
             assert "X-RateLimit-Policy" in response.headers
-            assert response.headers["X-RateLimit-Policy"] == "50;w=10s"
+            assert response.headers["X-RateLimit-Policy"] == "Policy(noburst): 50/10s"
 
     @pytest.mark.asyncio
     async def test_retry_after_on_rate_limit(self, app_with_policy_header):
