@@ -5,15 +5,17 @@ A production-ready, high-performance rate limiter for FastAPI applications using
 ## Features
 
 - **GCRA Algorithm**: Smooth rate limiting with configurable burst capacity
+- **Multi-Rate Policies**: Apply multiple rate limits simultaneously (v0.2.0+)
 - **FastAPI Native**: Drop-in middleware and dependency injection support
 - **Redis Backend**: Distributed rate limiting across multiple instances
 - **Atomic Operations**: Single Redis RTT per decision using Lua scripting
-- **Flexible Identity Extraction**: IP-based, API key, user ID, or custom
+- **Flexible Identity Extraction**: IP-based, API key, user ID, or custom selectors
 - **Standard Headers**: RFC 6585 compliant with `429 Too Many Requests`
 - **Resilience**: Configurable fail-open/fail-closed behavior
 - **High Performance**: 1-7ms P99 overhead (benchmarked with Redis RTT)
 - **Type Safe**: Full type hints with mypy and pyright support
-- **Well Tested**: 52+ tests including property-based testing with Hypothesis
+- **Well Tested**: 72+ tests including property-based testing with Hypothesis
+- **OpenTelemetry**: Built-in observability with metrics and tracing (v0.2.0+)
 
 ## Installation
 
@@ -31,66 +33,100 @@ pip install fastapi-pacer
 
 ```python
 from fastapi import FastAPI, Depends
-from pacer import Limiter, LimiterMiddleware, Rate, limit
+from pacer import Limiter, LimiterMiddleware, Policy, Rate, limit
 
 # Initialize limiter
 limiter = Limiter(
     redis_url="redis://localhost:6379",
-    default_policy=Rate(permits=10, per="1s", burst=10),
 )
 
 app = FastAPI()
 
-# Add global middleware
+# Add global middleware with a policy
 app.add_middleware(
     LimiterMiddleware,
     limiter=limiter,
-    policy=Rate(permits=100, per="1m"),
+    policy=Policy(
+        rates=[Rate(100, "1m")],
+        key="ip",  # Rate limit by IP address
+        name="global"
+    ),
 )
 
-# Per-route rate limiting
-@app.get("/api/items", dependencies=[Depends(limit(Rate(100, "1m", burst=50)))])
+# Per-route rate limiting with burst
+@app.get("/api/items", dependencies=[Depends(limit(
+    Policy(
+        rates=[Rate(100, "1m", burst=50)],
+        key="ip",
+        name="items_endpoint"
+    )
+))])
 async def get_items():
     return {"items": []}
 ```
 
 ## Configuration
 
-### Rate Policies
+### Rate Policies (v0.2.0+)
 
 ```python
-from pacer import Rate
+from pacer import Policy, Rate
 
-# Basic rate limit: 10 requests per second
-rate = Rate(permits=10, per="1s")
+# Single rate policy
+policy = Policy(
+    rates=[Rate(10, "1s")],
+    key="ip",  # Rate limit by IP address
+    name="basic"
+)
 
-# With burst capacity: 100 requests per minute, burst of 20
-rate = Rate(permits=100, per="1m", burst=20)
+# Multi-rate policy (all rates must pass)
+policy = Policy(
+    rates=[
+        Rate(1000, "1h"),  # 1000 per hour
+        Rate(100, "1m"),   # 100 per minute  
+        Rate(10, "1s"),    # 10 per second
+    ],
+    key="api_key",  # Rate limit by API key
+    name="tiered"
+)
+
+# With burst capacity
+policy = Policy(
+    rates=[Rate(100, "1m", burst=20)],
+    key="user",
+    name="burst_enabled"
+)
 
 # Supported time units: "1s", "10s", "1m", "5m", "1h", "1d"
 ```
 
-### Identity Extraction
+### Identity Extraction (v0.2.0+)
 
 ```python
-from pacer.extractors import extract_ip, extract_api_key, extract_user_id
+from pacer import Policy, Rate, compose, key_ip, key_user
 
-# IP-based with proxy support
-limiter = Limiter(
-    extractor=extract_ip(trusted_proxies=["10.0.0.0/8", "127.0.0.1"]),
+# Built-in selectors
+policy = Policy(
+    rates=[Rate(100, "1m")],
+    key="ip",  # Built-in: "ip", "api_key", "user", "org"
+    name="by_ip"
 )
 
-# API key from header
-limiter = Limiter(
-    extractor=extract_api_key(header_name="X-API-Key"),
+# Composed selectors (combine multiple identities)
+policy = Policy(
+    rates=[Rate(50, "1m")],
+    key=compose(key_user, key_ip),  # Rate limit by user AND IP
+    name="user_ip_combo"
 )
 
-# Custom user ID extraction
-def get_user_id(request):
-    return request.state.user_id
+# Custom selector function
+def custom_selector(request):
+    return request.headers.get("X-Tenant-ID", "default")
 
-limiter = Limiter(
-    extractor=extract_user_id(get_user_id),
+policy = Policy(
+    rates=[Rate(200, "1m")],
+    key=custom_selector,
+    name="by_tenant"
 )
 ```
 
@@ -181,6 +217,48 @@ Content-Type: application/json
 }
 ```
 
+## What's New in v0.2.0
+
+### Multi-Rate Policies
+Apply multiple rate limits that all must pass:
+```python
+policy = Policy(
+    rates=[
+        Rate(1000, "1h"),  # Hourly limit
+        Rate(100, "1m"),   # Minute limit (prevents bursts)
+        Rate(10, "1s"),    # Second limit (smooths traffic)
+    ],
+    key="api_key",
+    name="tiered_limits"
+)
+```
+
+### Flexible Selectors
+Choose how to identify clients:
+```python
+# Built-in selectors
+Policy(rates=[...], key="ip")       # By IP address
+Policy(rates=[...], key="api_key")  # By API key
+Policy(rates=[...], key="user")     # By user ID
+Policy(rates=[...], key="org")      # By organization
+
+# Compose multiple selectors
+from pacer import compose, key_user, key_ip
+Policy(rates=[...], key=compose(key_user, key_ip))
+```
+
+### OpenTelemetry Integration
+```python
+from pacer import create_otel_hooks
+
+on_decision, on_error = create_otel_hooks("my-service")
+limiter = Limiter(
+    redis_url="redis://localhost:6379",
+    on_decision=on_decision,
+    on_error=on_error,
+)
+```
+
 ## Advanced Usage
 
 ### Multiple Rate Limits
@@ -188,11 +266,21 @@ Content-Type: application/json
 Apply different limits to different endpoints:
 
 ```python
-@app.get("/public", dependencies=[Depends(limit(Rate(1000, "1h")))])
+# Public endpoint with higher limits
+@app.get("/public", dependencies=[Depends(limit(
+    Policy(rates=[Rate(1000, "1h")], key="ip", name="public")
+))])
 async def public_endpoint():
     return {"access": "public"}
 
-@app.post("/private", dependencies=[Depends(limit(Rate(10, "1m", burst=0)))])
+# Private endpoint with strict limits
+@app.post("/private", dependencies=[Depends(limit(
+    Policy(
+        rates=[Rate(10, "1m", burst=0)],
+        key="api_key",
+        name="private"
+    )
+))])
 async def private_endpoint():
     return {"access": "restricted"}
 ```
@@ -278,7 +366,7 @@ uv run pytest
 uv run pytest -v
 
 # Run specific test files
-uv run pytest tests/test_policies.py
+uv run pytest tests/test_policy.py
 
 # Run with coverage
 uv run pytest --cov=src/pacer --cov-report=term-missing
@@ -367,8 +455,8 @@ Contributions welcome! Please read our contributing guidelines and submit PRs to
 
 ## Roadmap
 
-- v0.1: GCRA, middleware, dependency injection (current)
-- v0.2: Multiple rates per policy, per-principal selectors
+- v0.1: GCRA, middleware, dependency injection ✅
+- v0.2: Multiple rates per policy, flexible selectors, OpenTelemetry (current)
 - v0.3: Concurrency limiting, WebSocket support
 - v0.4: Policy DSL with hot-reload
 - v0.5: Token leasing, quotas, admin endpoints
